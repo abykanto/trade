@@ -1,0 +1,49 @@
+"""Tests for pending entry order planning."""
+
+import pytest
+
+from src.market.pending_entry import (
+    PendingOrderKind,
+    fill_price_violates_entry,
+    pending_would_fill_immediately,
+    plan_pending_entry,
+    select_pending_order_kind,
+)
+
+
+def test_buy_above_market_uses_buy_stop():
+    kind = select_pending_order_kind("BUY", 4290.0, bid=4277.0, ask=4277.2)
+    assert kind == PendingOrderKind.BUY_STOP
+    assert not pending_would_fill_immediately(kind, 4290.0, 4277.0, 4277.2)
+
+
+def test_buy_limit_refused_when_ask_below_entry():
+    kind = PendingOrderKind.BUY_LIMIT
+    assert pending_would_fill_immediately(kind, 4290.0, 4277.0, 4277.2)
+
+
+def test_buy_limit_rests_when_ask_above_entry():
+    kind = PendingOrderKind.BUY_LIMIT
+    assert not pending_would_fill_immediately(kind, 4290.0, 4291.0, 4291.5)
+
+
+def test_buy_stop_refused_when_ask_at_entry():
+    kind = PendingOrderKind.BUY_STOP
+    assert pending_would_fill_immediately(kind, 4290.0, 4289.0, 4290.0)
+
+
+def test_sell_below_market_uses_sell_stop():
+    kind = select_pending_order_kind("SELL", 4290.0, bid=4300.0, ask=4300.2)
+    assert kind == PendingOrderKind.SELL_STOP
+
+
+def test_plan_cannot_place_without_mt5_type():
+    plan = plan_pending_entry("BUY", 4290.0, 4277.0, 4277.2, tick_size=0.01)
+    assert plan.kind == PendingOrderKind.BUY_STOP
+    assert not plan.would_fill_immediately
+    assert plan.can_place is False  # mt5 type not wired
+
+
+def test_fill_price_violation_detects_market_dump():
+    assert fill_price_violates_entry("BUY", 4290.0, 4277.0, tick_size=0.01)
+    assert not fill_price_violates_entry("BUY", 4290.0, 4290.05, tick_size=0.01)

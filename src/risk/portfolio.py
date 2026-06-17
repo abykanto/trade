@@ -4,6 +4,7 @@ from sqlalchemy import func
 from datetime import datetime, date, timezone
 
 from src.core.models import TradeIdea, TradeState
+from src.market import Direction, SymbolContract
 
 logger = logging.getLogger(__name__)
 
@@ -20,12 +21,11 @@ class PortfolioRiskManager:
             logger.warning(f"PortfolioRiskManager: Rejected {symbol}. Negative or zero risk.")
             return False
             
-        if direction.upper() == "BUY" and hard_stop >= entry:
-            logger.warning(f"PortfolioRiskManager: Rejected {symbol}. BUY stop loss must be below entry.")
-            return False
-            
-        if direction.upper() == "SELL" and hard_stop <= entry:
-            logger.warning(f"PortfolioRiskManager: Rejected {symbol}. SELL stop loss must be above entry.")
+        if not Direction.parse(direction).stop_side_valid(entry, hard_stop):
+            logger.warning(
+                f"PortfolioRiskManager: Rejected {symbol}. "
+                f"Invalid stop side for {direction} (entry={entry}, stop={hard_stop})."
+            )
             return False
 
         # --- 5-LOSS CIRCUIT BREAKER ---
@@ -78,10 +78,13 @@ class PortfolioRiskManager:
         # --- DAILY DRAWDOWN HALT (Equity Based) ---
         today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         
-        total_loss_today = db.query(func.sum(TradeIdea.realized_pnl)).filter(
+        total_loss_today_q = db.query(func.sum(TradeIdea.realized_pnl)).filter(
             TradeIdea.updated_at >= today,
             TradeIdea.realized_pnl < 0
-        ).scalar() or 0.0
+        )
+        if exclude_idea_id is not None:
+            total_loss_today_q = total_loss_today_q.filter(TradeIdea.id != exclude_idea_id)
+        total_loss_today = total_loss_today_q.scalar() or 0.0
         
         if account_equity is not None and account_equity > 0:
             daily_loss_limit = account_equity * self.daily_dd_pct
@@ -116,32 +119,29 @@ class PortfolioRiskManager:
         return True
 
 class PositionSizingEngine:
+    """Thin facade over SymbolContract — keeps existing call sites stable."""
+
     @staticmethod
     def calculate_lot_size(
-        risk_amount: float, 
-        entry_price: float, 
-        stop_loss: float, 
+        risk_amount: float,
+        entry_price: float,
+        stop_loss: float,
         tick_value: float,
         tick_size: float,
         lot_step: float = 0.01,
         lot_min: float = 0.01,
-        lot_max: float = 100.0
+        lot_max: float = 100.0,
+        symbol: str = "",
     ) -> float:
-        distance = abs(entry_price - stop_loss)
-        if distance == 0 or tick_size == 0 or tick_value == 0:
-            return lot_min
-            
-        # Points of distance
-        points = distance / tick_size
-        
-        # Risk = lot_size * points * tick_value
-        lot_size = risk_amount / (points * tick_value)
-        
-        # Round to lot step
-        lot_size = round(lot_size / lot_step) * lot_step
-        
-        # Clamp to min/max
-        return max(lot_min, min(lot_size, lot_max))
+        contract = SymbolContract(
+            symbol=symbol,
+            tick_size=tick_size,
+            tick_value=tick_value,
+            lot_step=lot_step,
+            lot_min=lot_min,
+            lot_max=lot_max,
+        )
+        return contract.lot_size_for_risk(risk_amount, entry_price, stop_loss)
 
     @staticmethod
     def calculate_dollar_pnl(
@@ -151,13 +151,11 @@ class PositionSizingEngine:
         volume: float,
         tick_value: float,
         tick_size: float,
+        symbol: str = "",
     ) -> float:
-        """Convert a price move into dollar PnL for the given volume and contract specs."""
-        if tick_size == 0 or tick_value == 0 or volume <= 0:
-            return 0.0
-        if direction.upper() == "BUY":
-            price_move = exit_price - entry_price
-        else:
-            price_move = entry_price - exit_price
-        ticks = price_move / tick_size
-        return ticks * tick_value * volume
+        contract = SymbolContract(
+            symbol=symbol,
+            tick_size=tick_size,
+            tick_value=tick_value,
+        )
+        return contract.dollar_pnl(direction, entry_price, exit_price, volume)

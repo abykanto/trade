@@ -217,13 +217,70 @@ def test_final_hard_sl_breached_before_entry():
   assert TradeManager._final_hard_sl_breached(sell, 4365.0)
   assert not TradeManager._final_hard_sl_breached(sell, 4359.0)
 
+def test_resolve_position_ticket_by_identifier():
+    from types import SimpleNamespace
+    from src.main import TradeManager
+
+    positions = [
+        SimpleNamespace(identifier=100, ticket=200, volume=0.05),
+    ]
+    assert TradeManager._resolve_position_ticket(positions, 100) == 200
+    assert TradeManager._resolve_position_ticket(positions, 999) is None
+
+def test_resolve_position_ticket_rejects_order_ticket():
+    from types import SimpleNamespace
+    from src.market.position import resolve_position_ticket
+
+    positions = [
+        SimpleNamespace(identifier=100, ticket=100, volume=0.02, type=0, price_open=4290.0),
+        SimpleNamespace(identifier=100, ticket=200, volume=0.02, type=0, price_open=4290.0),
+    ]
+    assert resolve_position_ticket(positions, 100) == 200
+    assert resolve_position_ticket([positions[0]], 100) is None
+
+    from types import SimpleNamespace
+    from src.main import TradeManager
+
+    positions = [
+        SimpleNamespace(identifier=0, ticket=3135563212, volume=0.05, type=1, price_open=4290.0),
+    ]
+    assert TradeManager._resolve_position_ticket(
+        positions, order_ticket=999,
+        direction="SELL", volume=0.05, entry_price=4290.0,
+    ) == 3135563212
+
+def test_position_stop_matches():
+    from types import SimpleNamespace
+    from src.execution.bridge import MT5Bridge
+
+    pos = SimpleNamespace(sl=4291.0)
+    assert MT5Bridge.position_stop_matches(pos, 4291.0, tick_size=0.01)
+    assert not MT5Bridge.position_stop_matches(pos, 4292.0, tick_size=0.01)
+    assert not MT5Bridge.position_stop_matches(SimpleNamespace(sl=0.0), 4291.0)
+
+def test_pre_entry_sl_price_uses_ask_for_sell():
+    from src.main import TradeManager
+    from src.core.models import TradeIdea
+
+    sell = TradeIdea(
+        symbol="XAUUSD", direction="SELL", source="t", original_entry=4290.0,
+        original_hard_stop=4300.0, hard_stop=4300.0, take_profit=4270.0,
+        entry_zone_low=4280.0, entry_zone_high=4300.0, max_idea_risk=5.0, max_retries=3,
+    )
+    # Bid below final SL but ask above → SELL idea must invalidate
+    sl_price = TradeManager._pre_entry_sl_price(sell, bid=4299.5, ask=4300.2)
+    assert TradeManager._final_hard_sl_breached(sell, sl_price)
+    # Bid-only check would miss this breach
+    assert not TradeManager._final_hard_sl_breached(sell, 4299.5)
+
 def test_chop_exit_price_from_config():
     from src.core.config import TradingConfig
+    from src.market import ChopRules
 
-    cfg = TradingConfig(
-        chop_exit_distance=1.0,
-        symbol_chop_exit_distance={"EURUSD": 0.0001},
-    )
+    cfg = TradingConfig(chop=ChopRules(
+        default_distance=1.0,
+        per_symbol={"EURUSD": 0.0001},
+    ))
     assert cfg.chop_exit_price("XAUUSD", 4352.0, "BUY") == 4351.0
     assert cfg.chop_exit_price("XAUUSD", 4352.0, "SELL") == 4353.0
     assert cfg.chop_exit_price("EURUSD", 1.0850, "BUY") == pytest.approx(1.0849)
@@ -256,13 +313,17 @@ def test_recovery_trailing_xauusd_scenario():
 
 def test_classify_stop_exit():
     from src.main import TradeManager
-    assert TradeManager._classify_stop_exit("BUY", 4359.0, 4359.0, 4360.6, 0.01) == "CHOP_EXIT"
-    assert TradeManager._classify_stop_exit("BUY", 4360.6, 4359.0, 4360.6, 0.01) == "TRAILING_STOP"
+    from src.market import SymbolContract
+
+    xau = SymbolContract.for_symbol("XAUUSD")
+    assert TradeManager._classify_stop_exit("BUY", 4359.0, 4359.0, 4360.6, xau) == "CHOP_EXIT"
+    assert TradeManager._classify_stop_exit("BUY", 4360.6, 4359.0, 4360.6, xau) == "TRAILING_STOP"
 
 def test_pending_order_type_rules():
-    """BUY: ask above entry → limit (pullback); ask at/below entry → stop (breakout)."""
+    """BUY above market → stop; BUY below market → limit."""
     from unittest.mock import MagicMock
     from src.execution.bridge import MT5Bridge
+    from src.market.pending_entry import PendingOrderKind
 
     bridge = MT5Bridge()
     mt5 = MagicMock()
@@ -276,3 +337,19 @@ def test_pending_order_type_rules():
     assert bridge.expected_pending_order_type("BUY", 4300.0, 4299.0, 4299.5) == 4
     assert bridge.expected_pending_order_type("SELL", 4300.0, 4302.0, 4302.5) == 5
     assert bridge.expected_pending_order_type("SELL", 4300.0, 4298.0, 4298.5) == 3
+
+    plan = bridge.plan_pending_entry("BUY", 4290.0, 4277.0, 4277.2, tick_size=0.01)
+    assert plan.kind == PendingOrderKind.BUY_STOP
+    assert not plan.would_fill_immediately
+
+def test_api_rejects_sell_with_buy_levels():
+    from fastapi import HTTPException
+    from src.api.server import _validate_signal_levels
+
+    with pytest.raises(HTTPException) as exc:
+        _validate_signal_levels("SELL", 4250.0, 4240.0, 4270.0)
+    assert "BUY signal" in exc.value.detail
+
+def test_api_accepts_sell_levels():
+    from src.api.server import _validate_signal_levels
+    _validate_signal_levels("SELL", 4250.0, 4260.0, 4230.0)

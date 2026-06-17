@@ -24,7 +24,7 @@ class SignalPayload(BaseModel):
     hard_stop: float
     take_profit: float
     max_idea_risk: float = Field(..., gt=0.0)
-    max_retries: int = Field(default=3, gt=0)
+    max_retries: int = Field(default=25, gt=0)
     source: str = "API"
     entry_zone_size: float = Field(default=0.001, ge=0.0) # E.g., 0.1%
     expires_in_days: int = Field(default=5, ge=1)
@@ -38,17 +38,64 @@ def get_db():
     finally:
         db.close()
 
+def _validate_signal_levels(direction: str, entry: float, hard_stop: float, take_profit: float):
+    """Validate entry / hard_stop / take_profit geometry for BUY and SELL."""
+    if direction == "BUY":
+        if hard_stop >= entry:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "BUY: hard_stop must be below entry_price "
+                    f"(got entry={entry}, hard_stop={hard_stop})"
+                ),
+            )
+        if take_profit <= entry:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "BUY: take_profit must be above entry_price "
+                    f"(got entry={entry}, take_profit={take_profit})"
+                ),
+            )
+        return
+
+    # SELL
+    if hard_stop < entry and take_profit > entry:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Your levels match a BUY signal (hard_stop below entry, take_profit above entry) "
+                f"but direction is SELL. Use direction BUY, or for SELL set hard_stop above entry "
+                f"(e.g. {entry + 10}) and take_profit below entry (e.g. {entry - 10})."
+            ),
+        )
+    if hard_stop <= entry:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "SELL: hard_stop must be above entry_price "
+                f"(got entry={entry}, hard_stop={hard_stop}). "
+                f"Example: entry 4250 → hard_stop 4260, take_profit 4230."
+            ),
+        )
+    if take_profit >= entry:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "SELL: take_profit must be below entry_price "
+                f"(got entry={entry}, take_profit={take_profit})"
+            ),
+        )
+
 @app.post("/signals")
 def receive_signal(payload: SignalPayload, db = Depends(get_db)):
     direction = payload.direction.upper()
     if direction not in ["BUY", "SELL"]:
         raise HTTPException(status_code=400, detail="Invalid direction")
-        
-    if direction == "BUY" and payload.hard_stop >= payload.entry_price:
-        raise HTTPException(status_code=400, detail="BUY stop loss must be below entry")
-        
-    if direction == "SELL" and payload.hard_stop <= payload.entry_price:
-        raise HTTPException(status_code=400, detail="SELL stop loss must be above entry")
+
+    _validate_signal_levels(
+        direction, payload.entry_price, payload.hard_stop, payload.take_profit
+    )
 
     # Generate persistent fingerprint
     raw = f"{payload.symbol}_{direction}_{payload.entry_price}_{payload.hard_stop}_{payload.take_profit}_{payload.source}"

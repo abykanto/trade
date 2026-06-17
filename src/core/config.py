@@ -4,34 +4,28 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
+
+from src.market.chop import ChopRules
 
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.json"
 
 
 @dataclass
 class TradingConfig:
-    """Chop/whipsaw exit: close open trades when price moves against entry by this distance."""
+    """Runtime trading parameters loaded from config.json and env vars."""
 
-    chop_exit_distance: float = 1.0
-    symbol_chop_exit_distance: dict[str, float] = field(default_factory=dict)
+    chop: ChopRules
 
     def chop_distance_for(self, symbol: str) -> float:
-        return self.symbol_chop_exit_distance.get(symbol, self.chop_exit_distance)
+        return self.chop.distance_for(symbol)
 
     def chop_exit_price(self, symbol: str, entry: float, direction: str) -> float:
-        """Working stop for an open attempt: entry − distance (BUY), entry + distance (SELL)."""
-        distance = self.chop_distance_for(symbol)
-        if direction.upper() == "BUY":
-            return entry - distance
-        return entry + distance
+        return self.chop.exit_price(symbol, entry, direction)
 
     def chop_stop_breached(self, symbol: str, entry: float, direction: str, price: float) -> bool:
-        chop = self.chop_exit_price(symbol, entry, direction)
-        if direction.upper() == "BUY":
-            return price <= chop
-        return price >= chop
+        return self.chop.breached(symbol, entry, direction, price)
 
 
 def load_trading_config(path: Path | None = None) -> TradingConfig:
@@ -41,7 +35,7 @@ def load_trading_config(path: Path | None = None) -> TradingConfig:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
 
-    chop = float(os.environ.get("CHOP_EXIT_DISTANCE", data.get("chop_exit_distance", 1.0)))
+    chop_default = float(os.environ.get("CHOP_EXIT_DISTANCE", data.get("chop_exit_distance", 1.0)))
     per_symbol = dict(data.get("symbol_chop_exit_distance", {}))
 
     for key, value in os.environ.items():
@@ -49,4 +43,4 @@ def load_trading_config(path: Path | None = None) -> TradingConfig:
             symbol = key.removeprefix("CHOP_EXIT_DISTANCE_")
             per_symbol[symbol] = float(value)
 
-    return TradingConfig(chop_exit_distance=chop, symbol_chop_exit_distance=per_symbol)
+    return TradingConfig(chop=ChopRules.from_config_data(chop_default, per_symbol))

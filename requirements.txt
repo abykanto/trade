@@ -3,4 +3,5 @@ uvicorn==0.49.0
 sqlalchemy==2.0.51
 pydantic==2.13.4
 mt5linux==1.0.3
+pyarrow==20.0.0
 pytest==9.1.0

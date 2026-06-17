@@ -22,6 +22,9 @@ logs/
 run/
 *.pid
 
+# Price validation logs (runtime)
+data/price_logs/
+
 # Environment / secrets
 .env
 .env.*

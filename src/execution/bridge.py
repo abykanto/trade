@@ -4,6 +4,13 @@ import time
 from enum import Enum
 from typing import Optional, Any
 
+from src.market import MarketTick, SymbolContract, position_stop_matches
+from src.market.pending_entry import (
+    PendingOrderKind,
+    fill_price_violates_entry,
+    plan_pending_entry,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -249,7 +256,7 @@ class MT5Bridge:
             logger.error(f"Cannot get tick for close: {symbol}")
             return None
 
-        price = tick.bid if direction.upper() == "BUY" else tick.ask
+        price = MarketTick.from_mt5(tick).close_price(direction)
 
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
@@ -307,10 +314,14 @@ class MT5Bridge:
 
         try:
             result = mt5.order_send(request)
-            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+            if result is None:
+                return None
+            retcode = result.retcode
+            # 10025 = NO_CHANGES — SL/TP already at requested levels (e.g. from pending order)
+            if retcode in (mt5.TRADE_RETCODE_DONE, 10025):
                 self._mark_success()
                 return result
-            logger.warning(f"Modify position {ticket} failed: {getattr(result, 'retcode', 'None')}")
+            logger.warning(f"Modify position {ticket} failed: {retcode}")
         except Exception as e:
             logger.error(f"modify_position exception: {e}")
         return None
@@ -348,39 +359,174 @@ class MT5Bridge:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, self._sync_get_positions, symbol)
 
-    # ── Pending orders ────────────────────────────────────────────
+    def _sync_get_position(self, ticket: int) -> Optional[Any]:
+        mt5 = self._get_mt5()
+        if mt5 is None or self.connection_state == ConnectionState.DISCONNECTED:
+            return None
+        try:
+            positions = mt5.positions_get(ticket=ticket)
+            if positions:
+                self._mark_success()
+                return positions[0]
+        except Exception as e:
+            logger.error(f"get_position error: {e}")
+        return None
 
-    def expected_pending_order_type(
-        self, direction: str, entry_price: float, bid: float, ask: float
-    ) -> int | None:
-        """Return the MT5 pending order type for entry given live bid/ask."""
+    async def get_position(self, ticket: int) -> Optional[Any]:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._sync_get_position, ticket)
+
+    @staticmethod
+    def position_stop_matches(
+        position,
+        sl: float,
+        tick_size: float = 0.01,
+        tick_value: float = 1.0,
+        symbol: str = "",
+    ) -> bool:
+        contract = SymbolContract(symbol=symbol, tick_size=tick_size, tick_value=tick_value)
+        return position_stop_matches(position, sl, contract)
+
+    def _sync_get_position_close_price(self, position_ticket: int) -> Optional[float]:
+        """Return the broker fill price for the most recent close deal on a position."""
         mt5 = self._get_mt5()
         if mt5 is None:
             return None
-        if direction.upper() == "BUY":
-            # Buy when Ask reaches entry: limit if market above entry, stop if below
-            return mt5.ORDER_TYPE_BUY_LIMIT if ask > entry_price else mt5.ORDER_TYPE_BUY_STOP
-        if direction.upper() == "SELL":
-            return mt5.ORDER_TYPE_SELL_LIMIT if bid < entry_price else mt5.ORDER_TYPE_SELL_STOP
+        try:
+            deals = mt5.history_deals_get(position=position_ticket)
+            if not deals:
+                return None
+            exit_deals = [
+                d for d in deals
+                if getattr(d, 'entry', None) == mt5.DEAL_ENTRY_OUT
+                or getattr(d, 'entry', None) == 1  # DEAL_ENTRY_OUT fallback
+            ]
+            if not exit_deals:
+                exit_deals = list(deals)
+            last = max(exit_deals, key=lambda d: getattr(d, 'time', 0))
+            price = getattr(last, 'price', None)
+            if price:
+                self._mark_success()
+            return price
+        except Exception as e:
+            logger.error(f"get_position_close_price error: {e}")
         return None
+
+    async def get_position_close_price(self, position_ticket: int) -> Optional[float]:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None, self._sync_get_position_close_price, position_ticket
+        )
+
+    # ── Pending orders ────────────────────────────────────────────
+
+    def _mt5_pending_type_map(self, mt5) -> dict[PendingOrderKind, int]:
+        return {
+            PendingOrderKind.BUY_LIMIT: mt5.ORDER_TYPE_BUY_LIMIT,
+            PendingOrderKind.BUY_STOP: mt5.ORDER_TYPE_BUY_STOP,
+            PendingOrderKind.SELL_LIMIT: mt5.ORDER_TYPE_SELL_LIMIT,
+            PendingOrderKind.SELL_STOP: mt5.ORDER_TYPE_SELL_STOP,
+        }
+
+    def plan_pending_entry(
+        self, direction: str, entry_price: float, bid: float, ask: float,
+        tick_size: float = 0.01,
+    ):
+        mt5 = self._get_mt5()
+        type_map = self._mt5_pending_type_map(mt5) if mt5 else None
+        return plan_pending_entry(
+            direction, entry_price, bid, ask, tick_size=tick_size,
+            mt5_type_map=type_map,
+        )
+
+    def expected_pending_order_type(
+        self, direction: str, entry_price: float, bid: float, ask: float,
+        tick_size: float = 0.01,
+    ) -> int | None:
+        """Return the MT5 pending order type for entry given live bid/ask."""
+        plan = self.plan_pending_entry(
+            direction, entry_price, bid, ask, tick_size=tick_size
+        )
+        return plan.mt5_order_type
+
+    def _pending_would_fill_immediately(
+        self, mt5, direction: str, entry_price: float,
+        bid: float, ask: float, order_type: int,
+        tick_size: float = 0.01,
+    ) -> bool:
+        plan = self.plan_pending_entry(
+            direction, entry_price, bid, ask, tick_size=tick_size
+        )
+        if plan.mt5_order_type != order_type:
+            return True
+        return plan.would_fill_immediately
+
+    def _sync_verify_pending_resting(
+        self, symbol: str, order_ticket: int, direction: str,
+        entry_price: float, volume: float, tick_size: float,
+    ) -> tuple[bool, str]:
+        """After placement, confirm order is pending (not an immediate off-entry fill)."""
+        mt5 = self._get_mt5()
+        if mt5 is None:
+            return False, "mt5_unavailable"
+
+        time.sleep(0.2)
+        orders = mt5.orders_get(symbol=symbol)
+        if orders and any(getattr(o, "ticket", 0) == order_ticket for o in orders):
+            return True, "pending"
+
+        positions = mt5.positions_get(symbol=symbol) or []
+        ours = [p for p in positions if getattr(p, "magic", 0) == self.magic]
+        for p in ours:
+            if abs(getattr(p, "volume", 0.0) - volume) > 0.0001:
+                continue
+            fill = float(getattr(p, "price_open", 0.0))
+            if fill_price_violates_entry(direction, entry_price, fill, tick_size):
+                ticket = int(getattr(p, "ticket", 0))
+                close_type = mt5.ORDER_TYPE_SELL if direction.upper() == "BUY" else mt5.ORDER_TYPE_BUY
+                tick = mt5.symbol_info_tick(symbol)
+                price = tick.bid if direction.upper() == "BUY" else tick.ask
+                mt5.order_send({
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "symbol": symbol,
+                    "volume": volume,
+                    "type": close_type,
+                    "position": ticket,
+                    "price": price,
+                    "deviation": self.deviation,
+                    "magic": self.magic,
+                    "comment": "TradeIdeaBot_BadFillClose",
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": mt5.ORDER_FILLING_IOC,
+                })
+                return False, f"immediate_bad_fill@{fill}"
+        return False, "not_pending_no_bad_position"
 
     def _sync_place_pending_order(self, symbol: str, direction: str, volume: float,
                                   entry_price: float, bid: float, ask: float,
-                                  sl: float, tp: float) -> Optional[Any]:
+                                  sl: float, tp: float, tick_size: float = 0.01) -> Optional[Any]:
         mt5 = self._get_mt5()
         if mt5 is None or self.connection_state == ConnectionState.DISCONNECTED:
             return None
 
-        order_type = self.expected_pending_order_type(direction, entry_price, bid, ask)
-        if order_type is None:
+        plan = self.plan_pending_entry(
+            direction, entry_price, bid, ask, tick_size=tick_size
+        )
+        if plan.mt5_order_type is None:
             logger.error(f"Invalid direction: {direction}")
+            return None
+
+        if plan.would_fill_immediately:
+            logger.warning(
+                f"Deferring pending {direction} {symbol} @ {entry_price}: {plan.defer_reason}"
+            )
             return None
 
         request = {
             "action": mt5.TRADE_ACTION_PENDING,
             "symbol": symbol,
             "volume": volume,
-            "type": order_type,
+            "type": plan.mt5_order_type,
             "price": entry_price,
             "sl": sl,
             "tp": tp,
@@ -388,7 +534,7 @@ class MT5Bridge:
             "magic": self.magic,
             "comment": "TradeIdeaBot_Pending",
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
+            "type_filling": mt5.ORDER_FILLING_RETURN,
         }
 
         for attempt in range(1, self.max_order_retries + 1):
@@ -397,6 +543,18 @@ class MT5Bridge:
                 if result is None:
                     continue
                 if result.retcode == mt5.TRADE_RETCODE_DONE:
+                    order_ticket = getattr(result, "order", 0)
+                    ok, reason = self._sync_verify_pending_resting(
+                        symbol, order_ticket, direction, entry_price, volume, tick_size
+                    )
+                    if not ok:
+                        logger.error(
+                            f"Pending {direction} {symbol} @ {entry_price} failed resting "
+                            f"check: {reason}"
+                        )
+                        if order_ticket:
+                            self._sync_cancel_pending_order(order_ticket)
+                        return None
                     self._mark_success()
                     return result
                 logger.warning(
@@ -413,12 +571,12 @@ class MT5Bridge:
 
     async def place_pending_order(self, symbol: str, direction: str, volume: float,
                                   entry_price: float, bid: float, ask: float,
-                                  sl: float, tp: float) -> Optional[Any]:
+                                  sl: float, tp: float, tick_size: float = 0.01) -> Optional[Any]:
         """Place a pending Limit/Stop order. Returns MT5 result or None."""
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
             None, self._sync_place_pending_order, symbol, direction, volume,
-            entry_price, bid, ask, sl, tp
+            entry_price, bid, ask, sl, tp, tick_size
         )
 
     def _sync_cancel_pending_order(self, ticket: int) -> Optional[Any]:

@@ -1,34 +1,39 @@
 import logging
 
+from src.market import Direction, SymbolContract
 from src.risk.portfolio import PositionSizingEngine
 
 logger = logging.getLogger(__name__)
 
+
 class TrailingStopEngine:
     """
     Implements Whipsaw Recovery & Progressive Trailing logic.
-    
+
     When idea_realized_pnl is below target_net_profit (recovery mode), the stop
     locks exactly enough profit on the current attempt to bring idea net to target.
-    
+
     When the idea is already at/above target, progressive trailing uses consumed_risk
     (chop losses in dollars) for optional further protection toward TP.
     """
-    def __init__(self, progressive_secure_percentage: float = 0.60,
-                 target_net_profit: float = 0.10, safety_buffer: float = 0.20):
+
+    def __init__(
+        self,
+        progressive_secure_percentage: float = 0.60,
+        target_net_profit: float = 0.10,
+        safety_buffer: float = 0.20,
+    ):
         self.progressive_secure_percentage = progressive_secure_percentage
         self.target_net_profit = target_net_profit
         self.safety_buffer = safety_buffer
 
     @staticmethod
-    def dollars_to_price_distance(dollars: float, lot_size: float,
-                                   tick_value: float, tick_size: float) -> float:
-        """Convert a dollar amount into a price distance for the given contract."""
-        if lot_size <= 0 or tick_value <= 0 or tick_size <= 0:
-            logger.error("Invalid contract specs for dollar-to-price conversion.")
-            return 0.0
-        dollar_per_point = lot_size * (tick_value / tick_size)
-        return dollars / dollar_per_point
+    def dollars_to_price_distance(
+        dollars: float,
+        lot_size: float,
+        contract: SymbolContract,
+    ) -> float:
+        return contract.price_distance_for_dollars(dollars, lot_size)
 
     def calculate_new_stop(
         self,
@@ -42,31 +47,32 @@ class TrailingStopEngine:
         tick_value: float,
         tick_size: float,
         idea_realized_pnl: float = 0.0,
-        min_move_distance: float = 0.0005
+        min_move_distance: float = 0.0005,
+        symbol: str = "",
     ) -> float | None:
-        """
-        Returns a new absolute stop loss price, or None if no move is required.
-        """
-        is_buy = direction == "BUY"
+        """Returns a new absolute stop loss price, or None if no move is required."""
+        contract = SymbolContract(
+            symbol=symbol,
+            tick_size=tick_size,
+            tick_value=tick_value,
+        )
+        trade_dir = Direction.parse(direction)
 
-        floating_dollars = PositionSizingEngine.calculate_dollar_pnl(
-            direction, attempt_entry, current_price, lot_size, tick_value, tick_size
+        floating_dollars = contract.dollar_pnl(
+            direction, attempt_entry, current_price, lot_size
         )
         if floating_dollars <= 0:
             return None
 
         target = self.target_net_profit
 
-        # Recovery mode: idea net is below target — lock only what is needed for target net
         if idea_realized_pnl < target:
             needed = target - idea_realized_pnl
             if floating_dollars < needed:
                 return None
-            lock_price = self.dollars_to_price_distance(
-                needed, lot_size, tick_value, tick_size
-            )
-            proposed_sl = attempt_entry + lock_price if is_buy else attempt_entry - lock_price
-            if is_buy:
+            lock_price = self.dollars_to_price_distance(needed, lot_size, contract)
+            proposed_sl = trade_dir.offset_stop_from_entry(attempt_entry, lock_price)
+            if trade_dir.is_buy():
                 if proposed_sl > current_hard_stop + min_move_distance:
                     return proposed_sl
             else:
@@ -74,10 +80,9 @@ class TrailingStopEngine:
                     return proposed_sl
             return None
 
-        # Idea at/above target — progressive trailing (chop consumed_risk in dollars)
-        profit_points = (current_price - attempt_entry) if is_buy else (attempt_entry - current_price)
+        profit_points = trade_dir.favorable_move(attempt_entry, current_price)
         consumed_risk_price = self.dollars_to_price_distance(
-            consumed_risk, lot_size, tick_value, tick_size
+            consumed_risk, lot_size, contract
         )
 
         if profit_points <= consumed_risk_price:
@@ -85,7 +90,7 @@ class TrailingStopEngine:
 
         min_lock_dollars = consumed_risk + self.target_net_profit + self.safety_buffer
         min_lock_price = self.dollars_to_price_distance(
-            min_lock_dollars, lot_size, tick_value, tick_size
+            min_lock_dollars, lot_size, contract
         )
 
         net_profit_points = profit_points - consumed_risk_price
@@ -98,16 +103,17 @@ class TrailingStopEngine:
         else:
             progress_ratio = 0.0
 
-        dynamic_secure_pct = self.progressive_secure_percentage + \
-            (progress_ratio * (1.0 - self.progressive_secure_percentage) * 0.5)
+        dynamic_secure_pct = self.progressive_secure_percentage + (
+            progress_ratio * (1.0 - self.progressive_secure_percentage) * 0.5
+        )
 
         progressive_protection = net_profit_points * dynamic_secure_pct
         progressive_lock_price = consumed_risk_price + progressive_protection
         lock_price = max(min_lock_price, progressive_lock_price)
 
-        proposed_sl = attempt_entry + lock_price if is_buy else attempt_entry - lock_price
+        proposed_sl = trade_dir.offset_stop_from_entry(attempt_entry, lock_price)
 
-        if is_buy:
+        if trade_dir.is_buy():
             if proposed_sl > current_hard_stop + min_move_distance:
                 return proposed_sl
         else:
