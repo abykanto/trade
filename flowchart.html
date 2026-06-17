@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Visual Trading System Map</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&display=swap" rel="family">
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: #1e293b;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --primary: #38bdf8;
+            --success: #4ade80;
+            --warning: #fbbf24;
+            --danger: #f87171;
+            --purple: #c084fc;
+        }
+
+        body {
+            font-family: 'Outfit', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            margin: 0;
+            padding: 40px 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            font-weight: 800;
+            margin-bottom: 10px;
+            background: linear-gradient(to right, var(--primary), var(--success));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-align: center;
+        }
+
+        .subtitle {
+            color: var(--text-muted);
+            font-size: 1.1rem;
+            margin-bottom: 50px;
+            text-align: center;
+            max-width: 600px;
+        }
+
+        /* Flow container layout */
+        .flow-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 40px;
+            width: 100%;
+            max-width: 800px;
+        }
+
+        /* Step Card styling */
+        .step-card {
+            background-color: var(--card-bg);
+            border-left: 6px solid var(--primary);
+            border-radius: 12px;
+            padding: 24px;
+            width: 100%;
+            box-sizing: border-box;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3);
+            display: flex;
+            align-items: center;
+            gap: 24px;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .step-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.4);
+        }
+
+        /* Step colors */
+        .step-card.setup { border-color: var(--primary); }
+        .step-card.risk { border-color: var(--purple); }
+        .step-card.pending { border-color: var(--warning); }
+        .step-card.active { border-color: var(--success); }
+        .step-card.exit { border-color: var(--danger); }
+
+        .step-number {
+            font-size: 2.5rem;
+            font-weight: 800;
+            opacity: 0.2;
+            min-width: 60px;
+        }
+
+        .icon-wrapper {
+            font-size: 3rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 80px;
+        }
+
+        .step-content {
+            flex-grow: 1;
+        }
+
+        .step-title {
+            font-size: 1.4rem;
+            font-weight: 800;
+            margin: 0 0 8px 0;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .step-desc {
+            color: var(--text-muted);
+            margin: 0;
+            line-height: 1.5;
+            font-size: 1.05rem;
+        }
+
+        /* Visual connection arrows */
+        .arrow {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            color: var(--text-muted);
+            font-size: 2rem;
+            animation: bounce 2s infinite;
+        }
+
+        @keyframes bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(5px); }
+        }
+
+        /* Branching container for step 5 */
+        .branch-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            width: 100%;
+        }
+
+        .branch-card {
+            background-color: var(--card-bg);
+            border-radius: 12px;
+            padding: 20px;
+            box-sizing: border-box;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3);
+            text-align: center;
+            border-top: 6px solid var(--text-muted);
+        }
+
+        .branch-card.reentry { border-color: var(--warning); }
+        .branch-card.kill { border-color: var(--danger); }
+
+        .branch-icon {
+            font-size: 2.5rem;
+            margin-bottom: 12px;
+        }
+
+        .branch-title {
+            font-size: 1.2rem;
+            font-weight: 800;
+            margin: 0 0 8px 0;
+        }
+
+        .branch-desc {
+            color: var(--text-muted);
+            font-size: 0.95rem;
+            margin: 0;
+            line-height: 1.4;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>🗺️ Visual Trading System Map</h1>
+    <div class="subtitle">A step-by-step layout of how your system receives, evaluates, executes, and manages trade ideas.</div>
+
+    <div class="flow-container">
+
+        <!-- STEP 1 -->
+        <div class="step-card setup">
+            <div class="step-number">01</div>
+            <div class="icon-wrapper">📡</div>
+            <div class="step-content">
+                <h2 class="step-title" style="color: var(--primary)">Signal Arrival</h2>
+                <p class="step-desc"><strong>API Server</strong> receives a new trade opportunity. It verifies the stop loss side, checks parameters, and writes the signal to the <strong>Database</strong>.</p>
+            </div>
+        </div>
+
+        <div class="arrow">↓</div>
+
+        <!-- STEP 2 -->
+        <div class="step-card risk">
+            <div class="step-number">02</div>
+            <div class="icon-wrapper">🛡️</div>
+            <div class="step-content">
+                <h2 class="step-title" style="color: var(--purple)">Risk & Sizing Check</h2>
+                <p class="step-desc">The bot verifies safety rules (daily limits, max ideas) and calculates the exact **Lot Size** so that any loss fits your precise Risk Budget.</p>
+            </div>
+        </div>
+
+        <div class="arrow">↓</div>
+
+        <!-- STEP 3 -->
+        <div class="step-card pending">
+            <div class="step-number">03</div>
+            <div class="icon-wrapper">⚡</div>
+            <div class="step-content">
+                <h2 class="step-title" style="color: var(--warning)">Zero-Latency Placement</h2>
+                <p class="step-desc">The bot immediately posts a **native Pending Order** (Limit or Stop) in MT5. The system sits back and waits for MT5 to fill it automatically.</p>
+            </div>
+        </div>
+
+        <div class="arrow">↓</div>
+
+        <!-- STEP 4 -->
+        <div class="step-card active">
+            <div class="step-number">04</div>
+            <div class="icon-wrapper">🟢</div>
+            <div class="step-content">
+                <h2 class="step-title" style="color: var(--success)">Active Trade Management</h2>
+                <p class="step-desc">Once the order triggers, the **Progressive Trailing Engine** converts dollar targets to price distances to protect your profit and adjust the Stop Loss.</p>
+            </div>
+        </div>
+
+        <div class="arrow">↓</div>
+
+        <!-- STEP 5 -->
+        <div class="step-card exit">
+            <div class="step-number">05</div>
+            <div class="icon-wrapper">🛑</div>
+            <div class="step-content">
+                <h2 class="step-title" style="color: var(--danger)">The Exit Resolution</h2>
+                <p class="step-desc">If the trade hits a Take Profit, it closes as a win. If it hits a Stop Loss, it closes and decides based on remaining budget:</p>
+            </div>
+        </div>
+
+        <!-- BRANCHES FOR STEP 5 -->
+        <div class="branch-container">
+            <div class="branch-card reentry">
+                <div class="branch-icon">🔄</div>
+                <h3 class="branch-title" style="color: var(--warning)">Whipsaw Re-Entry</h3>
+                <p class="branch-desc">Remaining risk budget > 0. Revert to <strong>Waiting for Re-Entry</strong> and queue a new Pending Order in MT5.</p>
+            </div>
+            <div class="branch-card kill">
+                <div class="branch-icon">☠️</div>
+                <h3 class="branch-title" style="color: var(--danger)">Permanent Kill</h3>
+                <p class="branch-desc">Remaining risk budget is exhausted. The trade idea is marked as <strong>Invalidated</strong> and deleted from the active list.</p>
+            </div>
+        </div>
+
+    </div>
+
+</body>
+</html>
