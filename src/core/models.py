@@ -173,3 +173,5 @@ class ExecutionRequest:
     tp: float
     attempt_number: int
     current_price: float = 0.0
+    bid: float = 0.0
+    ask: float = 0.0

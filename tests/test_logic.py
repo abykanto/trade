@@ -43,31 +43,27 @@ def test_trailing_stop_whipsaw_recovery():
     tick_value = 1.0
     tick_size = 0.01
     
-    # Phase 1: Price hasn't recovered consumed_risk yet — NO trailing
-    # consumed_risk = $3.50 → price distance = 3.50 / (1.0 * (1.0/0.01)) = 3.50 / 100 = 0.035
-    # profit_points at 1000.53 = 0.03 < 0.035 → None
+    # Phase 1: Price hasn't recovered idea deficit yet — NO trailing
+    # idea_realized_pnl = -$3.50 → need $3.60 floating to lock recovery target
     new_sl = engine.calculate_new_stop(
         direction="BUY", attempt_entry=1000.50, current_price=1000.53,
         current_hard_stop=995.0, consumed_risk=3.50, take_profit=1012.0,
-        lot_size=lot_size, tick_value=tick_value, tick_size=tick_size
+        lot_size=lot_size, tick_value=tick_value, tick_size=tick_size,
+        idea_realized_pnl=-3.50,
     )
-    assert new_sl is None, "Should NOT trail while still recovering consumed risk"
+    assert new_sl is None, "Should NOT trail while still recovering idea deficit"
     
-    # Phase 2: Price has recovered and is approaching TP
-    # current_price = 1004.50 → profit_points = 4.00
-    # consumed_risk_price = 0.035
-    # profit_points (4.00) > consumed_risk_price (0.035) → recovery achieved!
-    # min_lock_dollars = 3.50 + 0.10 + 0.20 = $3.80
-    # min_lock_price = 3.80 / 100 = 0.038
-    # proposed_sl = 1000.50 + 0.038 = 1000.538
-    # But progressive lock will be larger since profit is much bigger...
+    # Phase 2: Price has recovered enough to lock idea net at target ($0.10)
     new_sl = engine.calculate_new_stop(
         direction="BUY", attempt_entry=1000.50, current_price=1004.50,
         current_hard_stop=995.0, consumed_risk=3.50, take_profit=1012.0,
-        lot_size=lot_size, tick_value=tick_value, tick_size=tick_size
+        lot_size=lot_size, tick_value=tick_value, tick_size=tick_size,
+        idea_realized_pnl=-3.50,
     )
     assert new_sl is not None, "Should trail after recovery"
     assert new_sl > 1000.50, "Stop must be above entry to lock in recovery"
+    # Lock $3.60 → 0.036 price distance → ~1000.536
+    assert new_sl == pytest.approx(1000.536, abs=0.001)
 
 def test_trailing_stop_no_consumed_risk():
     """When consumed_risk = 0 (first attempt, no whipsaw), trailing should
@@ -236,3 +232,47 @@ def test_chop_exit_price_from_config():
     assert not cfg.chop_stop_breached("XAUUSD", 4352.0, "BUY", 4351.5)
     assert cfg.chop_stop_breached("XAUUSD", 4352.0, "SELL", 4353.0)
     assert not cfg.chop_stop_breached("XAUUSD", 4352.0, "SELL", 4352.5)
+
+def test_dollar_pnl_xauusd():
+    # 0.05 lot, $1 move ≈ $5 (tick_size=0.01, tick_value=1.0)
+    pnl = PositionSizingEngine.calculate_dollar_pnl(
+        "BUY", 4360.0, 4359.0, 0.05, tick_value=1.0, tick_size=0.01
+    )
+    assert pnl == pytest.approx(-5.0)
+
+def test_recovery_trailing_xauusd_scenario():
+    """Idea #4 attempt 3: after +$3 and -$5, lock ~$2.10 for +$0.10 idea net."""
+    engine = TrailingStopEngine(target_net_profit=0.10)
+    # idea realized = -$2.00 before attempt 3
+    new_sl = engine.calculate_new_stop(
+        direction="BUY", attempt_entry=4360.0, current_price=4362.0,
+        current_hard_stop=4359.0, consumed_risk=5.0, take_profit=4370.0,
+        lot_size=0.04, tick_value=1.0, tick_size=0.01,
+        idea_realized_pnl=-2.0,
+    )
+    assert new_sl is not None
+    # needed = 0.10 - (-2.0) = 2.10 → 2.10/4 = 0.525 → SL 4360.525
+    assert new_sl == pytest.approx(4360.525, abs=0.01)
+
+def test_classify_stop_exit():
+    from src.main import TradeManager
+    assert TradeManager._classify_stop_exit("BUY", 4359.0, 4359.0, 4360.6, 0.01) == "CHOP_EXIT"
+    assert TradeManager._classify_stop_exit("BUY", 4360.6, 4359.0, 4360.6, 0.01) == "TRAILING_STOP"
+
+def test_pending_order_type_rules():
+    """BUY: ask above entry → limit (pullback); ask at/below entry → stop (breakout)."""
+    from unittest.mock import MagicMock
+    from src.execution.bridge import MT5Bridge
+
+    bridge = MT5Bridge()
+    mt5 = MagicMock()
+    mt5.ORDER_TYPE_BUY_LIMIT = 2
+    mt5.ORDER_TYPE_BUY_STOP = 4
+    mt5.ORDER_TYPE_SELL_LIMIT = 3
+    mt5.ORDER_TYPE_SELL_STOP = 5
+    bridge._get_mt5 = lambda: mt5
+
+    assert bridge.expected_pending_order_type("BUY", 4300.0, 4302.0, 4302.5) == 2
+    assert bridge.expected_pending_order_type("BUY", 4300.0, 4299.0, 4299.5) == 4
+    assert bridge.expected_pending_order_type("SELL", 4300.0, 4302.0, 4302.5) == 5
+    assert bridge.expected_pending_order_type("SELL", 4300.0, 4298.0, 4298.5) == 3

@@ -64,6 +64,24 @@ class TradeManager:
             return price >= idea.take_profit
         return price <= idea.take_profit
 
+    @staticmethod
+    def _classify_stop_exit(
+        direction: str, close_price: float, chop_sl: float, hard_stop: float, tick_size: float
+    ) -> str:
+        """Classify a broker-side stop fill as chop loss or trailing exit."""
+        tol = tick_size * 3
+        if direction == "BUY":
+            if close_price <= chop_sl + tol:
+                return "CHOP_EXIT"
+            if hard_stop > chop_sl + tol:
+                return "TRAILING_STOP"
+            return "CHOP_EXIT"
+        if close_price >= chop_sl - tol:
+            return "CHOP_EXIT"
+        if hard_stop < chop_sl - tol:
+            return "TRAILING_STOP"
+        return "CHOP_EXIT"
+
     def _invalidate_pre_entry_breach(self, session, idea: TradeIdea, price: float, sl_breached: bool):
         idea.state = TradeState.IDEA_INVALIDATED.value
         reason = "SL_HIT_BEFORE_ENTRY" if sl_breached else "TP_HIT_BEFORE_ENTRY"
@@ -112,34 +130,55 @@ class TradeManager:
         close_price: float,
         chop_sl: float,
         exit_reason: str,
+        tick_value: float,
+        tick_size: float,
+        hard_stop_at_close: float | None = None,
         elapsed_time: timedelta | None = None,
     ):
         """Record a closed attempt and transition idea state after exit."""
-        actual_entry = attempt.entry_price
-        pnl = (close_price - actual_entry) if idea.direction == "BUY" else (actual_entry - close_price)
+        if exit_reason == "MT5_STOP":
+            hard_stop = hard_stop_at_close if hard_stop_at_close is not None else idea.hard_stop
+            exit_reason = self._classify_stop_exit(
+                idea.direction, close_price, chop_sl, hard_stop, tick_size
+            )
+
+        pnl_dollars = PositionSizingEngine.calculate_dollar_pnl(
+            idea.direction, attempt.entry_price, close_price,
+            attempt.volume, tick_value, tick_size,
+        )
 
         attempt.exit_price = close_price
-        attempt.pnl = pnl
+        attempt.pnl = pnl_dollars
         attempt.closed_at = utcnow()
         attempt.exit_reason = exit_reason
-        idea.realized_pnl += pnl
+        idea.realized_pnl += pnl_dollars
         session.delete(open_pos)
+
+        target = self.trailing_engine.target_net_profit
+        had_whipsaw = idea.consumed_risk > 0 or idea.retries_used > 0
 
         if exit_reason == "MAX_HOLD_EXCEEDED":
             idea.state = TradeState.IDEA_INVALIDATED.value
             self._log_event(session, idea.id, "TIME_EXIT", {
-                "pnl": pnl,
+                "pnl": pnl_dollars,
                 "elapsed_hours": elapsed_time.total_seconds() / 3600 if elapsed_time else 0,
             })
         elif exit_reason == "TAKE_PROFIT":
             idea.state = TradeState.TP_REACHED.value
-            self._log_event(session, idea.id, "TP_REACHED", {"pnl": pnl})
-        else:
-            if pnl < 0:
-                idea.consumed_risk += abs(pnl)
+            self._log_event(session, idea.id, "TP_REACHED", {"pnl": pnl_dollars})
+        elif exit_reason == "TRAILING_STOP" and idea.realized_pnl >= target and had_whipsaw:
+            idea.state = TradeState.TP_REACHED.value
+            self._log_event(session, idea.id, "RECOVERY_TARGET", {
+                "pnl": pnl_dollars,
+                "idea_net": idea.realized_pnl,
+                "target": target,
+            })
+        elif exit_reason == "CHOP_EXIT":
+            if pnl_dollars < 0:
+                idea.consumed_risk += abs(pnl_dollars)
             idea.retries_used += 1
             self._log_event(session, idea.id, "EARLY_EXIT", {
-                "pnl": pnl,
+                "pnl": pnl_dollars,
                 "consumed_risk": idea.consumed_risk,
                 "exit_reason": exit_reason,
                 "chop_sl": chop_sl,
@@ -156,6 +195,24 @@ class TradeManager:
                 self._log_event(session, idea.id, "WAITING_FOR_REENTRY", {
                     "remaining_risk": idea.max_idea_risk - idea.consumed_risk
                 })
+        elif exit_reason == "TRAILING_STOP":
+            self._log_event(session, idea.id, "EARLY_EXIT", {
+                "pnl": pnl_dollars,
+                "consumed_risk": idea.consumed_risk,
+                "exit_reason": exit_reason,
+                "chop_sl": chop_sl,
+            })
+            idea.state = TradeState.WAITING_FOR_REENTRY.value
+            idea.hard_stop = idea.original_hard_stop
+            self._log_event(session, idea.id, "WAITING_FOR_REENTRY", {
+                "remaining_risk": idea.max_idea_risk - idea.consumed_risk
+            })
+        else:
+            self._log_event(session, idea.id, "EARLY_EXIT", {
+                "pnl": pnl_dollars,
+                "exit_reason": exit_reason,
+            })
+            idea.state = TradeState.IDEA_INVALIDATED.value
 
         idea.version += 1
         session.commit()
@@ -293,7 +350,7 @@ class TradeManager:
                 logger.info(f"Executing pending order for {req.symbol}")
                 result = await self.bridge.place_pending_order(
                     symbol=req.symbol, direction=req.direction, volume=req.volume,
-                    entry_price=req.price, current_price=req.current_price, sl=req.sl, tp=req.tp
+                    entry_price=req.price, bid=req.bid, ask=req.ask, sl=req.sl, tp=req.tp
                 )
                 
                 with self.SessionLocal() as session:
@@ -308,7 +365,11 @@ class TradeManager:
                         
                         idea.state = TradeState.PENDING_ORDER_PLACED.value
                         
-                        self._log_event(session, idea.id, "PENDING_ORDER_PLACED", {"ticket": attempt.mt5_ticket, "entry_price": req.price})
+                        self._log_event(session, idea.id, "PENDING_ORDER_PLACED", {
+                            "ticket": attempt.mt5_ticket,
+                            "entry_price": req.price,
+                            "chop_sl": req.sl,
+                        })
                     else:
                         attempt.execution_state = ExecutionState.REJECTED.value
                         attempt.exit_reason = f"REJECTED: {getattr(result, 'retcode', 'None')}" if result else "BRIDGE_ERROR"
@@ -319,6 +380,30 @@ class TradeManager:
                     
                     idea.version += 1
                     session.commit()
+
+                # If the pending order fills immediately, ensure chop SL is on the position
+                if result and result.retcode == 10009:
+                    order_ticket = getattr(result, 'order', 0)
+                    applied = False
+                    for _ in range(20):
+                        positions = await self.bridge.get_positions(req.symbol)
+                        if positions:
+                            for p in positions:
+                                if getattr(p, 'identifier', 0) == order_ticket:
+                                    pos_ticket = getattr(p, 'ticket', order_ticket)
+                                    await self.bridge.modify_position(
+                                        ticket=pos_ticket, symbol=req.symbol,
+                                        sl=req.sl, tp=req.tp,
+                                    )
+                                    logger.info(
+                                        f"[{req.symbol}] Immediate fill on order {order_ticket}; "
+                                        f"chop SL {req.sl} applied to position {pos_ticket}"
+                                    )
+                                    applied = True
+                                    break
+                        if applied:
+                            break
+                        await asyncio.sleep(0.05)
                 
                 self.execution_queue.task_done()
             except asyncio.CancelledError:
@@ -395,6 +480,14 @@ class TradeManager:
                                 exclude_idea_id=idea.id
                             ):
                                 continue
+
+                            tick = await self.bridge.get_tick(symbol)
+                            if tick is None:
+                                continue
+                            live_bid = getattr(tick, 'bid', 0.0)
+                            live_ask = getattr(tick, 'ask', 0.0)
+                            if live_bid == 0.0 or live_ask == 0.0:
+                                continue
                             
                             volume = PositionSizingEngine.calculate_lot_size(
                                 risk_amount=remaining_risk, entry_price=idea.original_entry, 
@@ -402,6 +495,10 @@ class TradeManager:
                                 tick_size=tick_size, lot_step=lot_step, lot_min=lot_min, lot_max=lot_max
                             )
                             idea.lot_size = volume
+                            
+                            chop_sl = self.config.chop_exit_price(
+                                symbol, idea.original_entry, idea.direction
+                            )
                             
                             attempt_num = idea.retries_used + 1
                             attempt = TradeAttempt(
@@ -416,8 +513,10 @@ class TradeManager:
                             req = ExecutionRequest(
                                 idea_id=idea.id, symbol=idea.symbol, direction=idea.direction,
                                 volume=volume, price=idea.original_entry,
-                                sl=idea.original_hard_stop, tp=idea.take_profit,
-                                attempt_number=attempt_num, current_price=current_price
+                                sl=chop_sl, tp=idea.take_profit,
+                                attempt_number=attempt_num,
+                                current_price=live_bid,
+                                bid=live_bid, ask=live_ask,
                             )
                             await self.execution_queue.put(req)
                             
@@ -439,6 +538,61 @@ class TradeManager:
                             
                             if orders is None or positions is None:
                                 continue # MT5 disconnected or error fetching
+
+                            tick = await self.bridge.get_tick(symbol)
+                            if tick is None:
+                                continue
+                            live_bid = getattr(tick, 'bid', 0.0)
+                            live_ask = getattr(tick, 'ask', 0.0)
+
+                            expected_type = self.bridge.expected_pending_order_type(
+                                idea.direction, idea.original_entry, live_bid, live_ask
+                            )
+                            for o in orders:
+                                if getattr(o, 'ticket', 0) != attempt.mt5_ticket:
+                                    continue
+                                if expected_type is not None and getattr(o, 'type', None) != expected_type:
+                                    chop_sl = self.config.chop_exit_price(
+                                        symbol, attempt.entry_price, idea.direction
+                                    )
+                                    cancel_res = await self.bridge.cancel_pending_order(
+                                        attempt.mt5_ticket
+                                    )
+                                    if cancel_res is None:
+                                        logger.warning(
+                                            f"[{symbol}] Failed to cancel stale pending "
+                                            f"{attempt.mt5_ticket} for type replacement"
+                                        )
+                                        break
+                                    replace_res = await self.bridge.place_pending_order(
+                                        symbol=symbol, direction=idea.direction,
+                                        volume=attempt.volume, entry_price=attempt.entry_price,
+                                        bid=live_bid, ask=live_ask,
+                                        sl=chop_sl, tp=idea.take_profit,
+                                    )
+                                    if replace_res and replace_res.retcode == 10009:
+                                        attempt.mt5_ticket = getattr(replace_res, 'order', 0)
+                                        self._log_event(session, idea.id, "ORDER_TYPE_REPLACED", {
+                                            "old_type": getattr(o, 'type', None),
+                                            "new_type": expected_type,
+                                            "ticket": attempt.mt5_ticket,
+                                            "bid": live_bid,
+                                            "ask": live_ask,
+                                        })
+                                        idea.version += 1
+                                        session.commit()
+                                        logger.info(
+                                            f"[{symbol}] Replaced stale pending order — "
+                                            f"now type {expected_type} @ {attempt.entry_price} "
+                                            f"(ask={live_ask})"
+                                        )
+                                    else:
+                                        attempt.execution_state = ExecutionState.CANCELLED.value
+                                        attempt.exit_reason = "ORDER_TYPE_REPLACE_FAILED"
+                                        idea.state = TradeState.WAITING_FOR_REENTRY.value
+                                        idea.version += 1
+                                        session.commit()
+                                    break
                                 
                             # Check if the pending order has converted to a position
                             filled = any(getattr(p, 'identifier', 0) == attempt.mt5_ticket for p in positions)
@@ -513,6 +667,13 @@ class TradeManager:
                             if not attempt or not open_pos:
                                 continue
 
+                            spec = await self.bridge.get_symbol_spec(symbol)
+                            if spec is None:
+                                continue
+
+                            t_tick_value = getattr(spec, 'trade_tick_value', 1.0)
+                            t_tick_size = getattr(spec, 'trade_tick_size', 0.00001)
+
                             actual_entry = attempt.entry_price
                             chop_sl = self.config.chop_exit_price(
                                 symbol, actual_entry, idea.direction
@@ -527,7 +688,9 @@ class TradeManager:
                                 if not still_open:
                                     await self._handle_trade_closed(
                                         session, idea, attempt, open_pos, symbol,
-                                        current_price, chop_sl, exit_reason="MT5_STOP"
+                                        current_price, chop_sl, exit_reason="MT5_STOP",
+                                        tick_value=t_tick_value, tick_size=t_tick_size,
+                                        hard_stop_at_close=open_pos.current_stop,
                                     )
                                     continue
 
@@ -562,25 +725,20 @@ class TradeManager:
                                 await self._handle_trade_closed(
                                     session, idea, attempt, open_pos, symbol,
                                     close_price, chop_sl, exit_reason=exit_reason,
+                                    tick_value=t_tick_value, tick_size=t_tick_size,
+                                    hard_stop_at_close=idea.hard_stop,
                                     elapsed_time=elapsed_time if time_hit else None,
                                 )
                                 continue
                             
                             else:
-                                # Fetch contract specs for Dollar-to-Price conversion
-                                spec = await self.bridge.get_symbol_spec(symbol)
-                                if spec is None:
-                                    continue  # MT5 disconnected, skip trailing this tick
-
-                                t_tick_value = getattr(spec, 'trade_tick_value', 1.0)
-                                t_tick_size = getattr(spec, 'trade_tick_size', 0.00001)
-
                                 new_sl = self.trailing_engine.calculate_new_stop(
                                     direction=idea.direction, attempt_entry=actual_entry,
                                     current_price=current_price, current_hard_stop=idea.hard_stop,
                                     consumed_risk=idea.consumed_risk, take_profit=idea.take_profit,
                                     lot_size=open_pos.volume, tick_value=t_tick_value,
-                                    tick_size=t_tick_size, min_move_distance=t_tick_size * 5
+                                    tick_size=t_tick_size, idea_realized_pnl=idea.realized_pnl,
+                                    min_move_distance=t_tick_size * 5
                                 )
                                 if new_sl is not None:
                                     mod_res = await self.bridge.modify_position(

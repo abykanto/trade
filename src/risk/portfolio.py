@@ -142,3 +142,22 @@ class PositionSizingEngine:
         
         # Clamp to min/max
         return max(lot_min, min(lot_size, lot_max))
+
+    @staticmethod
+    def calculate_dollar_pnl(
+        direction: str,
+        entry_price: float,
+        exit_price: float,
+        volume: float,
+        tick_value: float,
+        tick_size: float,
+    ) -> float:
+        """Convert a price move into dollar PnL for the given volume and contract specs."""
+        if tick_size == 0 or tick_value == 0 or volume <= 0:
+            return 0.0
+        if direction.upper() == "BUY":
+            price_move = exit_price - entry_price
+        else:
+            price_move = entry_price - exit_price
+        ticks = price_move / tick_size
+        return ticks * tick_value * volume

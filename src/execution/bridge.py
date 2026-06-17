@@ -350,19 +350,29 @@ class MT5Bridge:
 
     # ── Pending orders ────────────────────────────────────────────
 
+    def expected_pending_order_type(
+        self, direction: str, entry_price: float, bid: float, ask: float
+    ) -> int | None:
+        """Return the MT5 pending order type for entry given live bid/ask."""
+        mt5 = self._get_mt5()
+        if mt5 is None:
+            return None
+        if direction.upper() == "BUY":
+            # Buy when Ask reaches entry: limit if market above entry, stop if below
+            return mt5.ORDER_TYPE_BUY_LIMIT if ask > entry_price else mt5.ORDER_TYPE_BUY_STOP
+        if direction.upper() == "SELL":
+            return mt5.ORDER_TYPE_SELL_LIMIT if bid < entry_price else mt5.ORDER_TYPE_SELL_STOP
+        return None
+
     def _sync_place_pending_order(self, symbol: str, direction: str, volume: float,
-                                  entry_price: float, current_price: float,
+                                  entry_price: float, bid: float, ask: float,
                                   sl: float, tp: float) -> Optional[Any]:
         mt5 = self._get_mt5()
         if mt5 is None or self.connection_state == ConnectionState.DISCONNECTED:
             return None
 
-        # Determine Limit vs Stop based on live price
-        if direction.upper() == "BUY":
-            order_type = mt5.ORDER_TYPE_BUY_LIMIT if current_price > entry_price else mt5.ORDER_TYPE_BUY_STOP
-        elif direction.upper() == "SELL":
-            order_type = mt5.ORDER_TYPE_SELL_LIMIT if current_price < entry_price else mt5.ORDER_TYPE_SELL_STOP
-        else:
+        order_type = self.expected_pending_order_type(direction, entry_price, bid, ask)
+        if order_type is None:
             logger.error(f"Invalid direction: {direction}")
             return None
 
@@ -402,12 +412,13 @@ class MT5Bridge:
         return None
 
     async def place_pending_order(self, symbol: str, direction: str, volume: float,
-                                  entry_price: float, current_price: float,
+                                  entry_price: float, bid: float, ask: float,
                                   sl: float, tp: float) -> Optional[Any]:
         """Place a pending Limit/Stop order. Returns MT5 result or None."""
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
-            None, self._sync_place_pending_order, symbol, direction, volume, entry_price, current_price, sl, tp
+            None, self._sync_place_pending_order, symbol, direction, volume,
+            entry_price, bid, ask, sl, tp
         )
 
     def _sync_cancel_pending_order(self, ticket: int) -> Optional[Any]:
