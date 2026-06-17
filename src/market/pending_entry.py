@@ -39,11 +39,24 @@ class PendingEntryPlan:
     @property
     def defer_reason(self) -> str:
         if self.would_fill_immediately:
+            if entry_inside_spread(self.entry, self.bid, self.ask):
+                return (
+                    f"entry {self.entry} inside spread (bid={self.bid}, ask={self.ask}) "
+                    f"— waiting for price to leave spread before resting at entry"
+                )
             return (
                 f"{self.kind.value} @ {self.entry} would execute at current "
                 f"market (bid={self.bid}, ask={self.ask}) instead of resting"
             )
         return ""
+
+
+def entry_inside_spread(
+    entry: float, bid: float, ask: float, tick_size: float = 0.0
+) -> bool:
+    """True when entry sits inside (or on) the spread — cannot rest at exact price."""
+    eps = tick_size if tick_size > 0 else 0.0
+    return bid > 0 and ask > 0 and (bid - eps) <= entry <= (ask + eps)
 
 
 def pending_would_fill_immediately(
@@ -54,6 +67,9 @@ def pending_would_fill_immediately(
     tick_size: float = 0.0,
 ) -> bool:
     """True when MT5 would fill this pending order right away (not at a future touch of entry)."""
+    if entry_inside_spread(entry, bid, ask, tick_size):
+        return True
+
     eps = tick_size if tick_size > 0 else 0.0
 
     if kind == PendingOrderKind.BUY_LIMIT:
@@ -93,14 +109,15 @@ def select_pending_order_kind(
             return PendingOrderKind.BUY_STOP
         if entry < ask - eps:
             return PendingOrderKind.BUY_LIMIT
-        # Entry inside spread / at market — prefer stop semantics for breakout ideas
-        return PendingOrderKind.BUY_STOP
+        # Inside spread — kind is nominal; caller must defer via would_fill_immediately
+        return PendingOrderKind.BUY_LIMIT
 
     if entry < bid - eps:
         return PendingOrderKind.SELL_STOP
     if entry > bid + eps:
         return PendingOrderKind.SELL_LIMIT
-    return PendingOrderKind.SELL_STOP
+    # Inside spread — nominal kind; caller defers
+    return PendingOrderKind.SELL_LIMIT
 
 
 def plan_pending_entry(

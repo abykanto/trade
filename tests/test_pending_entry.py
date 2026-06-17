@@ -47,3 +47,11 @@ def test_plan_cannot_place_without_mt5_type():
 def test_fill_price_violation_detects_market_dump():
     assert fill_price_violates_entry("BUY", 4290.0, 4277.0, tick_size=0.01)
     assert not fill_price_violates_entry("BUY", 4290.0, 4290.05, tick_size=0.01)
+
+
+def test_entry_inside_spread_defers():
+    from src.market.pending_entry import entry_inside_spread, select_pending_order_kind
+
+    assert entry_inside_spread(1.1482, 1.1481, 1.1483, tick_size=0.00001)
+    kind = select_pending_order_kind("BUY", 1.1482, 1.1481, 1.1483, tick_size=0.00001)
+    assert pending_would_fill_immediately(kind, 1.1482, 1.1481, 1.1483, tick_size=0.00001)

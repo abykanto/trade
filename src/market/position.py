@@ -26,7 +26,9 @@ def resolve_position_ticket(
 ) -> int | None:
     """Map a pending order ticket to the live position ticket, if filled."""
     for p in positions:
-        if getattr(p, "identifier", 0) != order_ticket:
+        ident = int(getattr(p, "identifier", 0) or 0)
+        ticket = int(getattr(p, "ticket", 0) or 0)
+        if ident != order_ticket and ticket != order_ticket:
             continue
         pos_ticket = getattr(p, "ticket", None)
         vol = getattr(p, "volume", 0.0)

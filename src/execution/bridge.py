@@ -6,6 +6,7 @@ from enum import Enum
 from typing import Optional, Any
 
 from src.market import MarketTick, SymbolContract, position_stop_matches
+from src.market.order_outcome import PendingOrderOutcome, resolve_pending_order_outcome
 from src.market.pending_entry import (
     PendingOrderKind,
     fill_price_violates_entry,
@@ -565,6 +566,10 @@ class MT5Bridge:
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_RETURN,
         }
+        logger.info(
+            f"Placing {plan.kind.value} {direction} {symbol} @ {entry_price} "
+            f"(bid={bid}, ask={ask})"
+        )
 
         for attempt in range(1, self.max_order_retries + 1):
             try:
@@ -652,4 +657,77 @@ class MT5Bridge:
         """Get active pending orders, optionally filtered by symbol. Returns None on error."""
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, self._sync_get_orders, symbol)
+
+    def _sync_resolve_pending_order_outcome(
+        self,
+        symbol: str,
+        order_ticket: int,
+        direction: str,
+        volume: float,
+        entry_price: float,
+        tick_size: float = 0.01,
+    ) -> PendingOrderOutcome:
+        mt5 = self._get_mt5()
+        if mt5 is None:
+            return PendingOrderOutcome(status="missing")
+
+        orders = mt5.orders_get(symbol=symbol)
+        positions = mt5.positions_get(symbol=symbol)
+        ours = [p for p in (positions or []) if getattr(p, "magic", 0) == self.magic]
+        filtered_orders = (
+            [o for o in orders if getattr(o, "magic", 0) == self.magic]
+            if orders else []
+        )
+
+        history_order = None
+        try:
+            hist = mt5.history_orders_get(ticket=order_ticket)
+            if hist:
+                history_order = hist[0]
+                self._mark_success()
+        except Exception as e:
+            logger.debug(f"history_orders_get({order_ticket}): {e}")
+
+        order_deals = None
+        try:
+            order_deals = mt5.history_deals_get(order=order_ticket)
+            if order_deals:
+                self._mark_success()
+        except Exception as e:
+            logger.debug(f"history_deals_get(order={order_ticket}): {e}")
+
+        return resolve_pending_order_outcome(
+            order_ticket=order_ticket,
+            symbol=symbol,
+            direction=direction,
+            volume=volume,
+            entry_price=entry_price,
+            tick_size=tick_size,
+            magic=self.magic,
+            orders=filtered_orders,
+            positions=ours,
+            history_order=history_order,
+            order_deals=list(order_deals) if order_deals else None,
+        )
+
+    async def resolve_pending_order_outcome(
+        self,
+        symbol: str,
+        order_ticket: int,
+        direction: str,
+        volume: float,
+        entry_price: float,
+        tick_size: float = 0.01,
+    ) -> PendingOrderOutcome:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            self._sync_resolve_pending_order_outcome,
+            symbol,
+            order_ticket,
+            direction,
+            volume,
+            entry_price,
+            tick_size,
+        )
 
