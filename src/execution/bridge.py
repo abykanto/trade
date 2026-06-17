@@ -39,10 +39,13 @@ class MT5Bridge:
     def _get_mt5(self):
         if self._mt5 is None:
             try:
-                import mt5linux as mt5
-                self._mt5 = mt5
+                from mt5linux import MetaTrader5
+                self._mt5 = MetaTrader5(host=self.host, port=self.port)
             except ImportError:
                 logger.error("mt5linux not installed. MT5 bridge unavailable.")
+                return None
+            except Exception as e:
+                logger.error(f"MT5 RPyC connection failed: {e}")
                 return None
         return self._mt5
 
@@ -53,7 +56,7 @@ class MT5Bridge:
         if mt5 is None:
             return False
         try:
-            if mt5.initialize(server=self.host, port=self.port):
+            if mt5.initialize():
                 self.connection_state = ConnectionState.ACTIVE
                 self._last_successful_call = time.monotonic()
                 self._reconnect_attempts = 0

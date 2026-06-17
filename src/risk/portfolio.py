@@ -14,7 +14,7 @@ class PortfolioRiskManager:
         self.max_active_ideas = max_active_ideas
         self.max_account_risk_percent = max_account_risk_percent
 
-    def can_accept_idea(self, db: Session, symbol: str, direction: str, hard_stop: float, entry: float, max_idea_risk: float, account_equity: float = None) -> bool:
+    def can_accept_idea(self, db: Session, symbol: str, direction: str, hard_stop: float, entry: float, max_idea_risk: float, account_equity: float = None, exclude_idea_id: int = None) -> bool:
         # Basic validation
         if max_idea_risk <= 0:
             logger.warning(f"PortfolioRiskManager: Rejected {symbol}. Negative or zero risk.")
@@ -45,7 +45,7 @@ class PortfolioRiskManager:
                 return False
 
         # --- MAX ACTIVE LIMITS ---
-        active_for_symbol = db.query(TradeIdea).filter(
+        active_symbol_q = db.query(TradeIdea).filter(
             TradeIdea.symbol == symbol,
             TradeIdea.state.in_([
                 TradeState.WAITING_FOR_SETUP.value,
@@ -53,7 +53,10 @@ class PortfolioRiskManager:
                 TradeState.TRADE_OPEN.value,
                 TradeState.WAITING_FOR_REENTRY.value
             ])
-        ).count()
+        )
+        if exclude_idea_id is not None:
+            active_symbol_q = active_symbol_q.filter(TradeIdea.id != exclude_idea_id)
+        active_for_symbol = active_symbol_q.count()
         
         if active_for_symbol > 0:
             logger.warning(f"PortfolioRiskManager: Rejected {symbol}. One active idea per symbol allowed.")
@@ -87,14 +90,17 @@ class PortfolioRiskManager:
                 return False
                 
             # Account risk check
-            active_risk = db.query(func.sum(TradeIdea.max_idea_risk)).filter(
+            active_risk_q = db.query(func.sum(TradeIdea.max_idea_risk)).filter(
                 TradeIdea.state.in_([
                     TradeState.WAITING_FOR_SETUP.value,
                     TradeState.PENDING_ORDER_PLACED.value,
                     TradeState.TRADE_OPEN.value,
                     TradeState.WAITING_FOR_REENTRY.value
                 ])
-            ).scalar() or 0.0
+            )
+            if exclude_idea_id is not None:
+                active_risk_q = active_risk_q.filter(TradeIdea.id != exclude_idea_id)
+            active_risk = active_risk_q.scalar() or 0.0
             
             total_proposed_risk = active_risk + max_idea_risk
             risk_percent = (total_proposed_risk / account_equity) * 100

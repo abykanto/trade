@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PID_DIR="$ROOT/run"
+
+stop_pid_file() {
+  local name="$1"
+  local file="$PID_DIR/$name.pid"
+  if [[ -f "$file" ]]; then
+    local pid
+    pid="$(cat "$file")"
+    if kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+      echo "Stopped $name (pid $pid)"
+    fi
+    rm -f "$file"
+  fi
+}
+
+stop_pid_file manager
+stop_pid_file api
+stop_pid_file mt5linux
+stop_pid_file mt5_terminal
+
+pkill -f "src.main" 2>/dev/null || true
+pkill -f "src.api.server:app" 2>/dev/null || true
+
+echo "Trade system stopped."

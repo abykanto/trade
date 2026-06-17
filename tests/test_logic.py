@@ -196,3 +196,43 @@ def test_portfolio_validation(db_session):
     
     # Negative risk
     assert not manager.can_accept_idea(db_session, "EURUSD", "BUY", hard_stop=1.0, entry=1.1, max_idea_risk=-10)
+
+def test_final_hard_sl_breached_before_entry():
+  from src.main import TradeManager
+
+  buy = TradeIdea(
+      symbol="XAUUSD", direction="BUY", source="test", original_entry=4352.0,
+      original_hard_stop=4345.0, hard_stop=4345.0, take_profit=4365.0,
+      entry_zone_low=4340.0, entry_zone_high=4360.0, max_idea_risk=10.0, max_retries=3,
+  )
+  sell = TradeIdea(
+      symbol="XAUUSD", direction="SELL", source="test", original_entry=4352.0,
+      original_hard_stop=4360.0, hard_stop=4360.0, take_profit=4340.0,
+      entry_zone_low=4340.0, entry_zone_high=4360.0, max_idea_risk=10.0, max_retries=3,
+  )
+
+  # BUY: price at or below final hard SL invalidates, even during re-entry wait
+  assert TradeManager._final_hard_sl_breached(buy, 4345.0)
+  assert TradeManager._final_hard_sl_breached(buy, 4337.0)
+  assert not TradeManager._final_hard_sl_breached(buy, 4346.0)
+
+  # SELL: price at or above final hard SL invalidates
+  assert TradeManager._final_hard_sl_breached(sell, 4360.0)
+  assert TradeManager._final_hard_sl_breached(sell, 4365.0)
+  assert not TradeManager._final_hard_sl_breached(sell, 4359.0)
+
+def test_chop_exit_price_from_config():
+    from src.core.config import TradingConfig
+
+    cfg = TradingConfig(
+        chop_exit_distance=1.0,
+        symbol_chop_exit_distance={"EURUSD": 0.0001},
+    )
+    assert cfg.chop_exit_price("XAUUSD", 4352.0, "BUY") == 4351.0
+    assert cfg.chop_exit_price("XAUUSD", 4352.0, "SELL") == 4353.0
+    assert cfg.chop_exit_price("EURUSD", 1.0850, "BUY") == pytest.approx(1.0849)
+    assert cfg.chop_stop_breached("XAUUSD", 4352.0, "BUY", 4351.0)
+    assert cfg.chop_stop_breached("XAUUSD", 4352.0, "BUY", 4350.5)
+    assert not cfg.chop_stop_breached("XAUUSD", 4352.0, "BUY", 4351.5)
+    assert cfg.chop_stop_breached("XAUUSD", 4352.0, "SELL", 4353.0)
+    assert not cfg.chop_stop_breached("XAUUSD", 4352.0, "SELL", 4352.5)

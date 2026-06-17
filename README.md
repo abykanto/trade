@@ -84,6 +84,28 @@ tests/
 |----------------|----------------------------|--------------------------------|
 | Database       | `sqlite:///trade_ideas.db` | Set via `TradeManager(db_url)` |
 | MT5 host/port  | `localhost:18812`          | Set via `MT5Bridge(host, port)` |
-| API port       | `8000`                     | Set via uvicorn `--port`       |
+| API port       | `8001`                     | Set via uvicorn `--port`       |
+| Chop exit      | `config.json`              | See below                      |
+
+### Chop exit distance (`config.json`)
+
+Whipsaw chop exit: close open trades when price moves against entry by this many **price points**.
+
+```json
+{
+  "chop_exit_distance": 1.0,
+  "symbol_chop_exit_distance": {
+    "XAUUSD": 1.0,
+    "EURUSD": 0.0001
+  }
+}
+```
+
+- **BUY** @ 4352 with distance `1.0` → working stop at **4351**
+- **SELL** @ 4352 with distance `1.0` → working stop at **4353**
+- Override globally: `CHOP_EXIT_DISTANCE=2.0`
+- Override per symbol: `CHOP_EXIT_DISTANCE_XAUUSD=2.0`
+
+The **final hard SL** from the signal (`original_hard_stop`) is kept in the DB for re-entry invalidation only.
 
 Logs are written to `trade_manager.log` and `api_server.log`.

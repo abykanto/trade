@@ -3,21 +3,24 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Virtual Environments
+# Virtual environments
 .venv/
 venv/
 env/
 ENV/
 
-# Database files
+# Local database (runtime state)
 *.sqlite3
 *.db
+*.db-shm
+*.db-wal
 trade_ideas.db
 
-# Logs
+# Logs and process/runtime dirs
 *.log
-trade_manager.log
-api_server.log
+logs/
+run/
+*.pid
 
 # Environment / secrets
 .env
@@ -28,10 +31,18 @@ api_server.log
 .vscode/
 *.swp
 
-# Testing
+# Testing / coverage
 .pytest_cache/
 htmlcov/
 .coverage
+.mypy_cache/
+.ruff_cache/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
 
 # OS
 .DS_Store
+Thumbs.db
