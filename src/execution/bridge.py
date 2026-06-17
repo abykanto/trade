@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import time
 from enum import Enum
 from typing import Optional, Any
@@ -58,12 +59,40 @@ class MT5Bridge:
 
     # ── Connection management ─────────────────────────────────────
 
+    def _sync_login_if_configured(self, mt5) -> bool:
+        """Optional login via MT5_LOGIN, MT5_PASSWORD, MT5_SERVER env vars."""
+        login = os.environ.get("MT5_LOGIN", "").strip()
+        password = os.environ.get("MT5_PASSWORD", "")
+        server = os.environ.get("MT5_SERVER", "").strip()
+        if not login or not password or not server:
+            return True
+        try:
+            ok = mt5.login(int(login), password=password, server=server)
+        except (TypeError, ValueError) as exc:
+            logger.error(f"MT5_LOGIN must be numeric: {exc}")
+            return False
+        if not ok:
+            logger.error(f"MT5 login failed for {login}@{server}: {mt5.last_error()}")
+            return False
+        logger.info(f"Logged into MT5 account {login} @ {server}")
+        return True
+
     def _sync_connect(self) -> bool:
         mt5 = self._get_mt5()
         if mt5 is None:
             return False
         try:
             if mt5.initialize():
+                if not self._sync_login_if_configured(mt5):
+                    self.connection_state = ConnectionState.DISCONNECTED
+                    return False
+                info = mt5.account_info()
+                if info:
+                    logger.info(
+                        f"MT5 account {getattr(info, 'login', '?')} "
+                        f"balance={getattr(info, 'balance', '?')} "
+                        f"leverage=1:{getattr(info, 'leverage', '?')}"
+                    )
                 self.connection_state = ConnectionState.ACTIVE
                 self._last_successful_call = time.monotonic()
                 self._reconnect_attempts = 0

@@ -4,6 +4,14 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VENV="/home/privatecirle/Documents/tr/.venv"
+
+if [[ -f "$ROOT/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/.env"
+  set +a
+fi
+
 export WINEPREFIX="${WINEPREFIX:-/home/privatecirle/.wine}"
 export WINEDEBUG="${WINEDEBUG:--all}"
 export PYTHONPATH="$ROOT"
