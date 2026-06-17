@@ -3,6 +3,7 @@ import logging
 import json
 import time
 from typing import Dict
+from datetime import timedelta
 
 from src.core.models import (
     TradeIdea, TradeState, SymbolState, ExecutionRequest,
@@ -373,13 +374,17 @@ class TradeManager:
                             
                             actual_entry = attempt.entry_price
                             
+                            # --- Time Based Exit (8H Max Hold) ---
+                            elapsed_time = utcnow() - attempt.opened_at
+                            time_hit = elapsed_time >= timedelta(hours=8)
+                            
                             stop_hit = (idea.direction == "BUY" and current_price <= idea.hard_stop) or \
                                        (idea.direction == "SELL" and current_price >= idea.hard_stop)
                             
                             tp_hit = (idea.direction == "BUY" and current_price >= idea.take_profit) or \
                                      (idea.direction == "SELL" and current_price <= idea.take_profit)
 
-                            if stop_hit or tp_hit:
+                            if stop_hit or tp_hit or time_hit:
                                 close_res = await self.bridge.close_position(
                                     ticket=open_pos.mt5_ticket, symbol=symbol, 
                                     direction=idea.direction, volume=open_pos.volume
@@ -395,7 +400,11 @@ class TradeManager:
                                 idea.realized_pnl += pnl
                                 session.delete(open_pos)
                                 
-                                if stop_hit:
+                                if time_hit:
+                                    attempt.exit_reason = "MAX_HOLD_EXCEEDED"
+                                    idea.state = TradeState.IDEA_INVALIDATED.value
+                                    self._log_event(session, idea.id, "TIME_EXIT", {"pnl": pnl, "elapsed_hours": elapsed_time.total_seconds() / 3600})
+                                elif stop_hit:
                                     if pnl < 0:
                                         idea.consumed_risk += abs(pnl)
                                         

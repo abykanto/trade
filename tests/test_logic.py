@@ -119,7 +119,7 @@ def test_position_sizing_engine():
     assert lot_size_max == 100.0
 
 def test_daily_loss_limit(db_session):
-    manager = PortfolioRiskManager(daily_loss_limit=50.0)
+    manager = PortfolioRiskManager(daily_dd_pct=0.07, max_account_risk_percent=10.0) # 7% limit
     
     # Add two losing trades today, total loss 60
     idea1 = TradeIdea(
@@ -137,10 +137,51 @@ def test_daily_loss_limit(db_session):
     db_session.add_all([idea1, idea2])
     db_session.commit()
     
-    # Should reject new idea because daily loss is 60 > 50
+    # Account equity is $1000. 7% is $70.
+    # Current loss is $60. Should accept.
     can_accept = manager.can_accept_idea(
         db=db_session, symbol="XAUUSD", direction="BUY", hard_stop=1990,
-        entry=2000, max_idea_risk=10
+        entry=2000, max_idea_risk=10, account_equity=1000.0
+    )
+    assert can_accept is True
+
+    # Add another losing trade of $20. Total loss = $80.
+    idea3 = TradeIdea(
+        symbol="JPYUSD", direction="BUY", source="test", original_entry=1.0,
+        original_hard_stop=0.9, hard_stop=0.9, take_profit=1.1,
+        entry_zone_low=0.9, entry_zone_high=1.1, max_idea_risk=20, max_retries=1,
+        realized_pnl=-20.0, updated_at=datetime.now(timezone.utc)
+    )
+    db_session.add(idea3)
+    db_session.commit()
+
+    # Total loss is $80. 7% of $1000 is $70. Should reject.
+    can_accept_now = manager.can_accept_idea(
+        db=db_session, symbol="XAUUSD", direction="BUY", hard_stop=1990,
+        entry=2000, max_idea_risk=10, account_equity=1000.0
+    )
+    assert can_accept_now is False
+
+def test_five_loss_circuit_breaker(db_session):
+    manager = PortfolioRiskManager()
+    
+    # Add 5 consecutive losing trades
+    for i in range(5):
+        idea = TradeIdea(
+            symbol=f"TEST{i}", direction="BUY", source="test", original_entry=1.0,
+            original_hard_stop=0.9, hard_stop=0.9, take_profit=1.1,
+            entry_zone_low=0.9, entry_zone_high=1.1, max_idea_risk=10, max_retries=1,
+            realized_pnl=-10.0, state=TradeState.IDEA_INVALIDATED.value,
+            updated_at=datetime.now(timezone.utc)
+        )
+        db_session.add(idea)
+    
+    db_session.commit()
+    
+    # System should be halted
+    can_accept = manager.can_accept_idea(
+        db=db_session, symbol="XAUUSD", direction="BUY", hard_stop=1990,
+        entry=2000, max_idea_risk=10, account_equity=10000.0
     )
     assert can_accept is False
 

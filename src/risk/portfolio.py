@@ -8,8 +8,9 @@ from src.core.models import TradeIdea, TradeState
 logger = logging.getLogger(__name__)
 
 class PortfolioRiskManager:
-    def __init__(self, daily_loss_limit=50.0, max_active_ideas=10, max_account_risk_percent=5.0):
-        self.daily_loss_limit = daily_loss_limit
+    def __init__(self, daily_dd_pct=0.03, max_active_ideas=10, max_account_risk_percent=5.0):
+        # daily_dd_pct replaces the fixed daily_loss_limit. e.g., 0.03 = 3%
+        self.daily_dd_pct = daily_dd_pct
         self.max_active_ideas = max_active_ideas
         self.max_account_risk_percent = max_account_risk_percent
 
@@ -27,6 +28,23 @@ class PortfolioRiskManager:
             logger.warning(f"PortfolioRiskManager: Rejected {symbol}. SELL stop loss must be above entry.")
             return False
 
+        # --- 5-LOSS CIRCUIT BREAKER ---
+        # Fetch the last 5 finalized ideas (TP, SL, or Invalidated with realized pnl)
+        last_five_completed = db.query(TradeIdea).filter(
+            TradeIdea.state.in_([
+                TradeState.TP_REACHED.value,
+                TradeState.IDEA_INVALIDATED.value
+            ])
+        ).order_by(TradeIdea.updated_at.desc()).limit(5).all()
+
+        if len(last_five_completed) == 5:
+            # Check if all 5 resulted in a loss (realized_pnl < 0)
+            all_losses = all(idea.realized_pnl < 0 for idea in last_five_completed)
+            if all_losses:
+                logger.error("PortfolioRiskManager: SYSTEM HALTED. 5 consecutive losses detected. Manual review required.")
+                return False
+
+        # --- MAX ACTIVE LIMITS ---
         active_for_symbol = db.query(TradeIdea).filter(
             TradeIdea.symbol == symbol,
             TradeIdea.state.in_([
@@ -54,22 +72,21 @@ class PortfolioRiskManager:
             logger.warning(f"PortfolioRiskManager: Rejected {symbol}. Max active ideas reached ({self.max_active_ideas}).")
             return False
 
+        # --- DAILY DRAWDOWN HALT (Equity Based) ---
         today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         
-        # Calculate daily loss as sum of realized_pnl where it's < 0 and updated today
         total_loss_today = db.query(func.sum(TradeIdea.realized_pnl)).filter(
             TradeIdea.updated_at >= today,
             TradeIdea.realized_pnl < 0
         ).scalar() or 0.0
         
-        # Note: realized_pnl is negative for losses, so we use abs()
-        if abs(total_loss_today) >= self.daily_loss_limit:
-            logger.warning(f"PortfolioRiskManager: Daily Loss Limit Hit ({abs(total_loss_today)} >= {self.daily_loss_limit}). No new ideas accepted.")
-            return False
-            
-        # Account risk check
         if account_equity is not None and account_equity > 0:
-            # Sum max idea risk of all active ideas + the new one
+            daily_loss_limit = account_equity * self.daily_dd_pct
+            if abs(total_loss_today) >= daily_loss_limit:
+                logger.warning(f"PortfolioRiskManager: Daily Drawdown Halt! ({abs(total_loss_today)} >= {daily_loss_limit:.2f}). No new ideas accepted.")
+                return False
+                
+            # Account risk check
             active_risk = db.query(func.sum(TradeIdea.max_idea_risk)).filter(
                 TradeIdea.state.in_([
                     TradeState.WAITING_FOR_SETUP.value,
@@ -85,6 +102,10 @@ class PortfolioRiskManager:
             if risk_percent > self.max_account_risk_percent:
                 logger.warning(f"PortfolioRiskManager: Max account risk exceeded ({risk_percent:.2f}% > {self.max_account_risk_percent}%).")
                 return False
+        else:
+            # Fallback if equity is not available
+            logger.warning("PortfolioRiskManager: Account equity not provided. Unable to calculate % DD.")
+            return False
 
         return True
 
