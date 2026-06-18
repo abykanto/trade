@@ -1,10 +1,25 @@
 from datetime import datetime, time, timezone
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 class SessionManager:
-    def __init__(self):
+    def __init__(self, prime_session_filter: bool | None = None):
+        # When False, trading is allowed in any UTC hour (prime session check skipped).
+        self.prime_session_filter = (
+            prime_session_filter
+            if prime_session_filter is not None
+            else _env_flag("ENABLE_PRIME_SESSION", True)
+        )
         self.sessions = {
             "TOKYO": (0, 9),
             "LONDON": (8, 16),
@@ -29,6 +44,9 @@ class SessionManager:
         }
 
     def is_in_prime_session(self, symbol: str) -> bool:
+        if not self.prime_session_filter:
+            return True
+
         now_utc = datetime.now(timezone.utc).time()
         current_hour = now_utc.hour
         

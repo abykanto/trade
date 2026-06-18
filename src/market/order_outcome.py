@@ -93,12 +93,14 @@ def resolve_pending_order_outcome(
 
 
 def _outcome_from_deals(
-    deals: list,
+    deals: list | None,
     direction: str,
     entry_price: float,
     tick_size: float,
     positions: list | None = None,
 ) -> PendingOrderOutcome | None:
+    if not deals:
+        return None
     in_deals = [d for d in deals if _deal_entry_flag(d) == DEAL_ENTRY_IN]
     if not in_deals:
         return None

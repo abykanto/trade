@@ -120,6 +120,31 @@ def select_pending_order_kind(
     return PendingOrderKind.SELL_LIMIT
 
 
+def entry_market_side(
+    direction: str | Direction,
+    entry: float,
+    bid: float,
+    ask: float,
+    tick_size: float = 0.0,
+) -> str:
+    """Describe where live price sits vs entry (drives limit vs stop on re-entry)."""
+    if entry_inside_spread(entry, bid, ask, tick_size):
+        return "inside_spread"
+    d = Direction.parse(direction)
+    eps = tick_size if tick_size > 0 else 0.0
+    if d.is_buy():
+        if entry > ask + eps:
+            return "market_below_entry"
+        if entry < ask - eps:
+            return "market_above_entry"
+    else:
+        if bid > entry + eps:
+            return "market_above_entry"
+        if bid < entry - eps:
+            return "market_below_entry"
+    return "inside_spread"
+
+
 def plan_pending_entry(
     direction: str | Direction,
     entry: float,

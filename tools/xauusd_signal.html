@@ -1,0 +1,1157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>XAUUSD Signal — Interactive R:R Chart</title>
+  <style>
+    :root {
+      --bg: #0a0e14;
+      --panel: #121a26;
+      --border: #2a3648;
+      --text: #e8eef7;
+      --muted: #7d8fa8;
+      --accent: #e8b84a;
+      --buy: #3ecf8e;
+      --sell: #f07178;
+      --mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+      --sans: "Segoe UI", system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: var(--sans);
+      background: var(--bg);
+      color: var(--text);
+      padding: 1rem;
+    }
+    .wrap { max-width: 1180px; margin: 0 auto; }
+    h1 { font-size: 1.35rem; margin: 0 0 0.2rem; font-weight: 600; }
+    .sub { color: var(--muted); margin-bottom: 1rem; font-size: 0.9rem; }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1rem 1.15rem;
+      margin-bottom: 1rem;
+    }
+    .chart-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem 1rem;
+      align-items: center;
+      margin-bottom: 0.65rem;
+      font-size: 0.85rem;
+    }
+    .chart-toolbar label { margin: 0; text-transform: none; letter-spacing: 0; color: var(--muted); }
+    .chart-toolbar select, .chart-toolbar button {
+      padding: 0.35rem 0.6rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #0d1219;
+      color: var(--text);
+      font-size: 0.85rem;
+      cursor: pointer;
+    }
+    .chart-toolbar button:hover { border-color: var(--accent); }
+    .chart-wrap {
+      position: relative;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      background: #080c11;
+    }
+    #chart {
+      display: block;
+      width: 100%;
+      height: 420px;
+      cursor: default;
+    }
+    #chart.cursor-line { cursor: ns-resize; }
+    #chart.cursor-group { cursor: grab; }
+    #chart.cursor-group-drag { cursor: grabbing; }
+    .chart-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      margin-top: 0.65rem;
+      font-family: var(--mono);
+      font-size: 0.82rem;
+    }
+    .legend-item { display: flex; align-items: center; gap: 0.4rem; }
+    .legend-swatch { width: 12px; height: 3px; border-radius: 1px; }
+    .legend-entry .legend-swatch { background: var(--accent); }
+    .legend-sl .legend-swatch { background: var(--sell); }
+    .legend-tp .legend-swatch { background: var(--buy); }
+    .legend-rr { color: var(--accent); font-weight: 600; }
+    .status { color: var(--muted); font-size: 0.8rem; margin-left: auto; }
+    label {
+      display: block;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+      margin-bottom: 0.3rem;
+    }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-bottom: 0.75rem; }
+    .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; margin-bottom: 0.75rem; }
+    @media (max-width: 700px) {
+      .grid2, .grid3 { grid-template-columns: 1fr; }
+    }
+    input {
+      width: 100%;
+      padding: 0.55rem 0.65rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: #0d1219;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 0.95rem;
+    }
+    input:focus { outline: 2px solid #a67c2e; border-color: var(--accent); }
+    .btn-row { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+    .pill {
+      padding: 0.45rem 0.75rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: #0d1219;
+      color: var(--muted);
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 0.85rem;
+    }
+    .pill.active { border-color: var(--accent); color: var(--accent); background: rgba(232,184,74,0.1); }
+    .pill.sell.active { border-color: var(--sell); color: var(--sell); background: rgba(240,113,120,0.1); }
+    .pill.buy.active { border-color: var(--buy); color: var(--buy); background: rgba(62,207,142,0.1); }
+    .chk { display: flex; align-items: center; gap: 0.45rem; color: var(--muted); font-size: 0.85rem; margin: 0.5rem 0; }
+    .chk input { width: auto; }
+    pre {
+      margin: 0;
+      padding: 0.85rem;
+      background: #080c11;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-family: var(--mono);
+      font-size: 0.76rem;
+      line-height: 1.4;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .copy-btn {
+      margin-top: 0.6rem;
+      width: 100%;
+      padding: 0.65rem;
+      border: none;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--accent), #a67c2e);
+      color: #1a1205;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .copy-btn.copied { background: var(--buy); color: #052a18; }
+    .hint { font-size: 0.8rem; color: var(--muted); margin-top: 0.6rem; line-height: 1.45; }
+    .rec-box {
+      background: #080c11;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.85rem;
+      font-size: 0.85rem;
+      line-height: 1.55;
+    }
+    .rec-box strong { color: var(--accent); }
+    .rec-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 0.5rem 1rem;
+      margin: 0.65rem 0;
+      font-family: var(--mono);
+      font-size: 0.82rem;
+    }
+    .rec-grid span { color: var(--muted); display: block; font-size: 0.7rem; text-transform: uppercase; }
+    .apply-rec-btn {
+      margin-top: 0.5rem;
+      padding: 0.5rem 0.85rem;
+      border-radius: 8px;
+      border: 1px solid var(--accent);
+      background: rgba(232,184,74,0.12);
+      color: var(--accent);
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 0.85rem;
+    }
+    .apply-rec-btn:hover { background: rgba(232,184,74,0.22); }
+    .rr-custom { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; margin-top: 0.4rem; }
+    .rr-custom input { width: 4.5rem; padding: 0.4rem 0.5rem; font-size: 0.85rem; }
+    .rr-custom button { padding: 0.4rem 0.65rem; border-radius: 6px; border: 1px solid var(--border); background: #0d1219; color: var(--text); cursor: pointer; font-size: 0.82rem; }
+    .pill.ratio.rec { border-color: #5a8fd4; color: #8ab4f0; }
+    .pill.ratio.rec.active { border-color: #8ab4f0; background: rgba(138,180,240,0.12); color: #8ab4f0; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>XAUUSD signal builder</h1>
+    <p class="sub">Drag each line independently, or use the move handle to shift all three. Chart refreshes from parquet every 10s.</p>
+
+    <div class="card">
+      <div class="chart-toolbar">
+        <label>Lookback <select id="lookback"><option value="60">1h</option><option value="180" selected>3h</option><option value="360">6h</option><option value="720">12h</option></select></label>
+        <button type="button" id="refreshBtn">Refresh chart</button>
+        <button type="button" id="resetBtn">Reset levels</button>
+        <span class="status" id="chartStatus">Loading…</span>
+      </div>
+      <div class="chart-wrap">
+        <canvas id="chart" width="1140" height="420"></canvas>
+      </div>
+      <div class="chart-legend">
+        <span class="legend-item legend-entry"><span class="legend-swatch"></span> Entry <strong id="legEntry">—</strong></span>
+        <span class="legend-item legend-sl"><span class="legend-swatch"></span> SL <strong id="legSl">—</strong></span>
+        <span class="legend-item legend-tp"><span class="legend-swatch"></span> TP <strong id="legTp">—</strong></span>
+        <span class="legend-rr">R:R <strong id="legRR">—</strong></span>
+        <span class="status" id="livePrice"></span>
+      </div>
+    </div>
+
+    <div class="card" id="recCard">
+      <label>Consolidation recommendation (last 30 × 1m)</label>
+      <div class="rec-box" id="recBox">Analyzing candles…</div>
+      <button type="button" class="apply-rec-btn" id="applyRecBtn" disabled>Apply recommendation to chart</button>
+    </div>
+
+    <div class="card">
+      <div class="grid2">
+        <div>
+          <label>Direction</label>
+          <div class="btn-row">
+            <button type="button" class="pill sell active" data-dir="SELL">SELL</button>
+            <button type="button" class="pill buy" data-dir="BUY">BUY</button>
+          </div>
+        </div>
+        <div>
+          <label>R:R preset</label>
+          <div class="btn-row" id="ratioPresets">
+            <button type="button" class="pill ratio active" data-risk="1" data-reward="4">1 : 4</button>
+            <button type="button" class="pill ratio" data-risk="1" data-reward="5">1 : 5</button>
+            <button type="button" class="pill ratio" data-risk="1" data-reward="3">1 : 3</button>
+            <button type="button" class="pill ratio" data-risk="1" data-reward="6">1 : 6</button>
+            <button type="button" class="pill ratio" data-risk="2" data-reward="7">2 : 7</button>
+            <button type="button" class="pill ratio" data-risk="1.5" data-reward="4.5">1.5 : 4.5</button>
+            <button type="button" class="pill ratio" data-risk="3" data-reward="10">3 : 10</button>
+            <button type="button" class="pill ratio" data-risk="0" data-reward="0">Free</button>
+          </div>
+          <div class="rr-custom">
+            <input id="customRisk" type="number" step="0.1" min="0.1" value="1" aria-label="Custom risk" />
+            <span style="color:var(--muted)">:</span>
+            <input id="customReward" type="number" step="0.1" min="0.1" value="4" aria-label="Custom reward" />
+            <button type="button" id="applyCustomRR">Set custom</button>
+          </div>
+        </div>
+      </div>
+      <label class="chk"><input type="checkbox" id="lockRR" /> Snap TP from SL when using R:R presets (not while dragging)</label>
+      <div class="grid3">
+        <div><label for="inpEntry">Entry</label><input id="inpEntry" type="number" step="0.01" /></div>
+        <div><label for="inpSl">Hard SL</label><input id="inpSl" type="number" step="0.01" /></div>
+        <div><label for="inpTp">Take profit</label><input id="inpTp" type="number" step="0.01" /></div>
+      </div>
+      <div class="grid2">
+        <div><label for="lotSize">Lot size</label><input id="lotSize" type="number" step="0.01" value="0.03" /></div>
+        <div><label for="maxRisk">Max idea risk ($)</label><input id="maxRisk" type="number" step="0.1" value="2.5" /></div>
+      </div>
+      <div class="grid2">
+        <div><label for="apiUrl">API URL</label><input id="apiUrl" type="text" value="http://localhost:8001" /></div>
+        <div><label for="source">Source</label><input id="source" type="text" /></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <label>curl command</label>
+      <pre id="curlOut"></pre>
+      <button type="button" class="copy-btn" id="copyBtn">Copy curl</button>
+      <p class="hint">Drag a coloured line to move only that level. Away from the lines, a move handle follows your cursor — drag it to shift entry, SL and TP together. Reset restores the original levels from page load.</p>
+    </div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const canvas = $("chart");
+    const ctx = canvas.getContext("2d");
+
+    const state = {
+      direction: "SELL",
+      ratio: 4,
+      lockRR: false,
+      candles: [],
+      entry: 4240,
+      sl: 4245,
+      tp: 4220,
+      dragging: null,
+      initialized: false,
+      originalLevels: null,
+      mouse: { x: 0, y: 0, inPlot: false },
+      hover: null,
+      dragAnchor: null,
+      lastFetchAt: null,
+      livePrice: null,
+      ratioRisk: 1,
+      ratioReward: 4,
+      recommendation: null,
+    };
+
+    const PAD = { l: 58, r: 96, t: 14, b: 26 };
+    const HANDLE_R = 14;
+    const LINE_HIT = 10;
+    const TAG_W = 82;
+    const TAG_H = 32;
+    const TAG_GAP = 3;
+    const POLL_MS = 10000;
+    const CONSOL_BARS = 30;
+
+    function round2(n) { return Math.round(n * 100) / 100; }
+
+    function ratioMultiplier(risk, reward) {
+      const r = parseFloat(risk);
+      const rw = parseFloat(reward);
+      if (!r || !rw || r <= 0 || rw <= 0) return 0;
+      return rw / r;
+    }
+
+    function setActiveRatioButton(risk, reward) {
+      document.querySelectorAll("#ratioPresets .pill.ratio").forEach((b) => {
+        const br = parseFloat(b.dataset.risk);
+        const bw = parseFloat(b.dataset.reward);
+        const isFree = br === 0 && bw === 0;
+        const match = isFree
+          ? !state.ratio
+          : Math.abs(br - risk) < 0.01 && Math.abs(bw - reward) < 0.01;
+        b.classList.toggle("active", match);
+      });
+    }
+
+    function applyRatio(risk, reward, applyToLevels = true) {
+      const mult = ratioMultiplier(risk, reward);
+      state.ratioRisk = mult ? parseFloat(risk) : 0;
+      state.ratioReward = mult ? parseFloat(reward) : 0;
+      state.ratio = mult;
+      setActiveRatioButton(state.ratioRisk, state.ratioReward);
+      if (applyToLevels && state.ratio) applyLevelsFromRatio("sl", true);
+    }
+
+    function simplifyRatioLabels(riskDist, rewardDist) {
+      const mult = rewardDist / riskDist;
+      const candidates = [
+        [1, 3], [1, 4], [1, 5], [1, 6], [1.5, 4.5], [2, 7], [3, 10], [2, 5], [3, 8],
+      ];
+      let best = [1, round2(mult)];
+      let bestErr = Infinity;
+      for (const [r, rw] of candidates) {
+        const err = Math.abs(rw / r - mult);
+        if (err < bestErr) {
+          bestErr = err;
+          best = [r, rw];
+        }
+      }
+      return { riskLabel: best[0], rewardLabel: best[1] };
+    }
+
+    function analyzeConsolidation(candles) {
+      const slice = candles.slice(-CONSOL_BARS);
+      if (slice.length < 10) return null;
+
+      const mids = slice.map((c) => (c.h + c.l + c.c) / 3).sort((a, b) => a - b);
+      const target = Math.max(5, Math.ceil(mids.length * 0.7));
+      let zoneLow = mids[0];
+      let zoneHigh = mids[mids.length - 1];
+      let bestW = Infinity;
+      for (let i = 0; i <= mids.length - target; i++) {
+        const lo = mids[i];
+        const hi = mids[i + target - 1];
+        const w = hi - lo;
+        if (w < bestW) {
+          bestW = w;
+          zoneLow = lo;
+          zoneHigh = hi;
+        }
+      }
+
+      const fullLow = Math.min(...slice.map((c) => c.l));
+      const fullHigh = Math.max(...slice.map((c) => c.h));
+      const fullRange = Math.max(fullHigh - fullLow, 0.01);
+      const zoneMid = (zoneLow + zoneHigh) / 2;
+      const zoneWidth = zoneHigh - zoneLow;
+
+      const moves = [];
+      for (let i = 1; i < slice.length; i++) {
+        const d = Math.abs(slice[i].c - slice[i - 1].c);
+        if (d >= zoneWidth * 0.12) moves.push(d);
+      }
+      const avgImpulse = moves.length
+        ? moves.reduce((a, b) => a + b, 0) / moves.length
+        : zoneWidth * 1.25;
+
+      const buffer = Math.max(0.3, zoneWidth * 0.08);
+      const riskDist = zoneWidth / 2 + buffer;
+      const rewardDist = Math.max(avgImpulse, zoneWidth * 1.1, riskDist * 2.5);
+
+      const price = state.livePrice ?? slice[slice.length - 1].c;
+      const direction = price >= zoneMid ? "SELL" : "BUY";
+
+      let entry;
+      let sl;
+      let tp;
+      if (direction === "SELL") {
+        entry = round2(Math.min(price, zoneHigh - zoneWidth * 0.08));
+        if (entry < zoneLow) entry = round2(zoneMid + zoneWidth * 0.12);
+        sl = round2(entry + riskDist);
+        tp = round2(entry - rewardDist);
+      } else {
+        entry = round2(Math.max(price, zoneLow + zoneWidth * 0.08));
+        if (entry > zoneHigh) entry = round2(zoneMid - zoneWidth * 0.12);
+        sl = round2(entry - riskDist);
+        tp = round2(entry + rewardDist);
+      }
+
+      const labels = simplifyRatioLabels(riskDist, rewardDist);
+      return {
+        zoneLow: round2(zoneLow),
+        zoneHigh: round2(zoneHigh),
+        zoneMid: round2(zoneMid),
+        zoneWidth: round2(zoneWidth),
+        fullRange: round2(fullRange),
+        compressionPct: round2((zoneWidth / fullRange) * 100),
+        barsAnalyzed: slice.length,
+        barOffset: candles.length - slice.length,
+        direction,
+        entry,
+        sl,
+        tp,
+        riskDist: round2(riskDist),
+        rewardDist: round2(rewardDist),
+        ratioMult: round2(rewardDist / riskDist),
+        ratioRisk: labels.riskLabel,
+        ratioReward: labels.rewardLabel,
+        avgImpulse: round2(avgImpulse),
+      };
+    }
+
+    function renderRecommendation() {
+      const rec = state.recommendation;
+      const btn = $("applyRecBtn");
+      if (!rec) {
+        $("recBox").innerHTML = "Need at least 10 one-minute bars in the lookback window to detect consolidation.";
+        btn.disabled = true;
+        return;
+      }
+      btn.disabled = false;
+      $("recBox").innerHTML = `
+        <div>Tightest <strong>70% price cluster</strong> over the last ${rec.barsAnalyzed} bars.</div>
+        <div class="rec-grid">
+          <div><span>Zone low</span>${rec.zoneLow.toFixed(2)}</div>
+          <div><span>Zone high</span>${rec.zoneHigh.toFixed(2)}</div>
+          <div><span>Zone width</span>${rec.zoneWidth.toFixed(2)} pts</div>
+          <div><span>Compression</span>${rec.compressionPct.toFixed(0)}% of ${rec.fullRange.toFixed(2)} range</div>
+          <div><span>Suggested</span><strong>${rec.direction}</strong></div>
+          <div><span>R:R</span><strong>${rec.ratioRisk} : ${rec.ratioReward}</strong> (${rec.ratioMult.toFixed(2)}×)</div>
+          <div><span>Entry</span>${rec.entry.toFixed(2)}</div>
+          <div><span>SL / TP</span>${rec.sl.toFixed(2)} / ${rec.tp.toFixed(2)}</div>
+          <div><span>Risk / reward</span>${rec.riskDist.toFixed(2)} / ${rec.rewardDist.toFixed(2)} pts</div>
+          <div><span>Avg impulse</span>${rec.avgImpulse.toFixed(2)} pts</div>
+        </div>
+        <div style="color:var(--muted);font-size:0.8rem">Risk = half-box + buffer beyond consolidation; reward = recent impulse extension (min 2.5× risk).</div>
+      `;
+    }
+
+    function applyRecommendation() {
+      const rec = state.recommendation;
+      if (!rec) return;
+      state.direction = rec.direction;
+      state.entry = rec.entry;
+      state.sl = rec.sl;
+      state.tp = rec.tp;
+      applyRatio(rec.ratioRisk, rec.ratioReward, false);
+      document.querySelectorAll("[data-dir]").forEach((b) => {
+        b.classList.toggle("active", b.dataset.dir === state.direction);
+      });
+      syncInputs();
+      drawChart();
+    }
+
+    function defaultSource() {
+      return `xau_${state.direction.toLowerCase()}_${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}`;
+    }
+
+    function snapshotLevels() {
+      return {
+        direction: state.direction,
+        ratio: state.ratio,
+        ratioRisk: state.ratioRisk,
+        ratioReward: state.ratioReward,
+        entry: state.entry,
+        sl: state.sl,
+        tp: state.tp,
+      };
+    }
+
+    function applySnapshot(snap) {
+      if (!snap) return;
+      state.direction = snap.direction;
+      state.ratio = snap.ratio;
+      state.ratioRisk = snap.ratioRisk ?? 1;
+      state.ratioReward = snap.ratioReward ?? snap.ratio ?? 4;
+      state.entry = snap.entry;
+      state.sl = snap.sl;
+      state.tp = snap.tp;
+      document.querySelectorAll("[data-dir]").forEach((b) => {
+        b.classList.toggle("active", b.dataset.dir === state.direction);
+      });
+      setActiveRatioButton(state.ratioRisk, state.ratioReward);
+    }
+
+    function saveOriginalLevels() {
+      state.originalLevels = snapshotLevels();
+    }
+
+    function resetLevels() {
+      if (state.originalLevels) {
+        applySnapshot(state.originalLevels);
+      } else {
+        fetchCandles(true);
+        return;
+      }
+      syncInputs();
+      drawChart();
+    }
+    function riskReward() {
+      const risk = Math.abs(state.entry - state.sl);
+      const reward = Math.abs(state.entry - state.tp);
+      if (risk < 0.001) return null;
+      return round2(reward / risk);
+    }
+
+    function applyLevelsFromRatio(anchor, force = false) {
+      if (!state.ratio) return;
+      if (!force && !state.lockRR) return;
+      if (state.direction === "SELL") {
+        if (anchor === "sl") {
+          const risk = state.sl - state.entry;
+          if (risk > 0) state.tp = round2(state.entry - risk * state.ratio);
+        } else if (anchor === "tp") {
+          const reward = state.entry - state.tp;
+          if (reward > 0) state.sl = round2(state.entry + reward / state.ratio);
+        } else if (anchor === "entry") {
+          const risk = state.sl - state.entry;
+          if (risk > 0) state.tp = round2(state.entry - risk * state.ratio);
+        }
+      } else {
+        if (anchor === "sl") {
+          const risk = state.entry - state.sl;
+          if (risk > 0) state.tp = round2(state.entry + risk * state.ratio);
+        } else if (anchor === "tp") {
+          const reward = state.tp - state.entry;
+          if (reward > 0) state.sl = round2(state.entry - reward / state.ratio);
+        } else if (anchor === "entry") {
+          const risk = state.entry - state.sl;
+          if (risk > 0) state.tp = round2(state.entry + risk * state.ratio);
+        }
+      }
+    }
+
+    function syncInputs() {
+      $("inpEntry").value = state.entry.toFixed(2);
+      $("inpSl").value = state.sl.toFixed(2);
+      $("inpTp").value = state.tp.toFixed(2);
+      $("legEntry").textContent = state.entry.toFixed(2);
+      $("legSl").textContent = state.sl.toFixed(2);
+      $("legTp").textContent = state.tp.toFixed(2);
+      const rr = riskReward();
+      if (rr == null) {
+        $("legRR").textContent = "—";
+      } else if (state.ratioRisk && state.ratioReward) {
+        $("legRR").textContent = `${state.ratioRisk} : ${state.ratioReward}`;
+      } else {
+        $("legRR").textContent = rr.toFixed(2);
+      }
+      renderCurl();
+    }
+
+    function priceExtents() {
+      let lo = Math.min(state.entry, state.sl, state.tp);
+      let hi = Math.max(state.entry, state.sl, state.tp);
+      for (const c of state.candles) {
+        lo = Math.min(lo, c.l);
+        hi = Math.max(hi, c.h);
+      }
+      if (state.livePrice != null) {
+        lo = Math.min(lo, state.livePrice);
+        hi = Math.max(hi, state.livePrice);
+      }
+      if (state.recommendation) {
+        lo = Math.min(lo, state.recommendation.zoneLow);
+        hi = Math.max(hi, state.recommendation.zoneHigh);
+      }
+      const pad = Math.max((hi - lo) * 0.08, 2);
+      return { lo: lo - pad, hi: hi + pad };
+    }
+
+    function chartGeom() {
+      const rect = canvas.getBoundingClientRect();
+      const w = rect.width;
+      const h = rect.height;
+      const plotW = w - PAD.l - PAD.r;
+      const plotH = h - PAD.t - PAD.b;
+      const { lo, hi } = priceExtents();
+      return { w, h, plotW, plotH, lo, hi };
+    }
+
+    function priceToY(price, geom) {
+      const { lo, hi, plotH } = geom;
+      const t = (price - lo) / (hi - lo || 1);
+      return PAD.t + plotH * (1 - t);
+    }
+
+    function yToPrice(y, geom) {
+      const { lo, hi, plotH } = geom;
+      const t = 1 - (y - PAD.t) / (plotH || 1);
+      return lo + t * (hi - lo);
+    }
+
+    function resolveTagYs(lineYs, geom) {
+      const minY = PAD.t + TAG_H / 2;
+      const maxY = PAD.t + geom.plotH - TAG_H / 2;
+      const order = lineYs.map((y, i) => ({ i, y: Math.min(maxY, Math.max(minY, y)) }));
+      order.sort((a, b) => a.y - b.y);
+      for (let j = 1; j < order.length; j++) {
+        const minAllowed = order[j - 1].y + TAG_H + TAG_GAP;
+        if (order[j].y < minAllowed) order[j].y = minAllowed;
+      }
+      for (let j = order.length - 2; j >= 0; j--) {
+        const maxAllowed = order[j + 1].y - TAG_H - TAG_GAP;
+        if (order[j].y > maxAllowed) order[j].y = maxAllowed;
+      }
+      const out = new Array(lineYs.length);
+      order.forEach((item) => { out[item.i] = item.y; });
+      return out;
+    }
+
+    function drawLevelTag(x, y, lineY, color, label, price, active) {
+      const top = y - TAG_H / 2;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.roundRect(x, top, TAG_W, TAG_H, 5);
+      ctx.fill();
+      if (active) {
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+
+      if (Math.abs(y - lineY) > 2) {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([2, 3]);
+        ctx.beginPath();
+        ctx.moveTo(x - 2, lineY);
+        ctx.lineTo(x, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      const cx = x + TAG_W / 2;
+      ctx.fillStyle = "#0a0e14";
+      ctx.font = "bold 11px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(label, cx, top + 10);
+      ctx.font = "bold 12px JetBrains Mono, monospace";
+      ctx.fillText(price.toFixed(2), cx, top + 23);
+      ctx.textBaseline = "alphabetic";
+    }
+
+    function drawChart() {
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = Math.floor(rect.width * dpr);
+      canvas.height = Math.floor(rect.height * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      const geom = chartGeom();
+      const { w, h, plotW, plotH } = geom;
+
+      ctx.fillStyle = "#080c11";
+      ctx.fillRect(0, 0, w, h);
+
+      // grid
+      ctx.strokeStyle = "#1a2332";
+      ctx.lineWidth = 1;
+      const gridLines = 6;
+      for (let i = 0; i <= gridLines; i++) {
+        const y = PAD.t + (plotH * i) / gridLines;
+        ctx.beginPath();
+        ctx.moveTo(PAD.l, y);
+        ctx.lineTo(PAD.l + plotW, y);
+        ctx.stroke();
+        const price = yToPrice(y, geom);
+        ctx.fillStyle = "#5a6a82";
+        ctx.font = "11px JetBrains Mono, monospace";
+        ctx.textAlign = "right";
+        ctx.fillText(price.toFixed(2), PAD.l - 6, y + 4);
+      }
+
+      // candles
+      const n = state.candles.length;
+      if (n > 0) {
+        const gap = Math.max(1, plotW / n * 0.15);
+        const cw = Math.max(2, (plotW - gap * (n + 1)) / n);
+        state.candles.forEach((c, i) => {
+          const x = PAD.l + gap + i * (cw + gap);
+          const yO = priceToY(c.o, geom);
+          const yC = priceToY(c.c, geom);
+          const yH = priceToY(c.h, geom);
+          const yL = priceToY(c.l, geom);
+          const up = c.c >= c.o;
+          ctx.strokeStyle = ctx.fillStyle = up ? "#3ecf8e" : "#f07178";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(x + cw / 2, yH);
+          ctx.lineTo(x + cw / 2, yL);
+          ctx.stroke();
+          const top = Math.min(yO, yC);
+          const bot = Math.max(yO, yC);
+          ctx.fillRect(x, top, cw, Math.max(1, bot - top));
+        });
+      } else {
+        ctx.fillStyle = "#5a6a82";
+        ctx.font = "14px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("No parquet ticks yet — start the trade manager to collect prices", w / 2, h / 2);
+      }
+
+      drawConsolidationZone(geom, n);
+
+      drawLivePriceMarker(geom);
+
+      // level lines
+      const lines = [
+        { key: "entry", price: state.entry, color: "#e8b84a", label: "ENTRY" },
+        { key: "sl", price: state.sl, color: "#f07178", label: "SL" },
+        { key: "tp", price: state.tp, color: "#3ecf8e", label: "TP" },
+      ];
+      const lineYs = lines.map((line) => priceToY(line.price, geom));
+      const tagYs = resolveTagYs(lineYs, geom);
+      const tagX = PAD.l + plotW + 6;
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const y = lineYs[i];
+        const tagY = tagYs[i];
+        const active = state.dragging === line.key;
+        ctx.strokeStyle = line.color;
+        ctx.lineWidth = active ? 2.5 : 1.5;
+        ctx.setLineDash(line.key === "entry" ? [] : [6, 4]);
+        ctx.beginPath();
+        ctx.moveTo(PAD.l, y);
+        ctx.lineTo(tagX - 2, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        drawLevelTag(tagX, tagY, y, line.color, line.label, line.price, active);
+      }
+
+      drawGroupHandle(geom);
+      updateCanvasCursor();
+    }
+
+    function drawLivePriceMarker(geom) {
+      if (state.livePrice == null) return;
+      const y = priceToY(state.livePrice, geom);
+      const { plotW, plotH } = geom;
+      if (y < PAD.t - 2 || y > PAD.t + plotH + 2) return;
+
+      ctx.save();
+      ctx.strokeStyle = "rgba(125, 143, 168, 0.22)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 7]);
+      ctx.beginPath();
+      ctx.moveTo(PAD.l, y);
+      ctx.lineTo(PAD.l + plotW, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.fillStyle = "rgba(125, 143, 168, 0.5)";
+      ctx.font = "10px JetBrains Mono, monospace";
+      ctx.textAlign = "right";
+      ctx.fillText(state.livePrice.toFixed(2), PAD.l - 6, y + 3);
+      ctx.restore();
+    }
+
+    function drawConsolidationZone(geom, candleCount) {
+      const rec = state.recommendation;
+      if (!rec || candleCount < 1) return;
+      const { plotW, plotH } = geom;
+      const gap = Math.max(1, plotW / candleCount * 0.15);
+      const cw = Math.max(2, (plotW - gap * (candleCount + 1)) / candleCount);
+      const startIdx = Math.max(0, rec.barOffset);
+      const endIdx = startIdx + rec.barsAnalyzed - 1;
+      const x0 = PAD.l + gap + startIdx * (cw + gap);
+      const x1 = PAD.l + gap + endIdx * (cw + gap) + cw;
+      const yTop = priceToY(rec.zoneHigh, geom);
+      const yBot = priceToY(rec.zoneLow, geom);
+
+      ctx.save();
+      ctx.fillStyle = "rgba(138, 180, 240, 0.08)";
+      ctx.fillRect(x0, yTop, x1 - x0, yBot - yTop);
+      ctx.strokeStyle = "rgba(138, 180, 240, 0.35)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.strokeRect(x0, yTop, x1 - x0, yBot - yTop);
+      ctx.setLineDash([]);
+      ctx.fillStyle = "rgba(138, 180, 240, 0.65)";
+      ctx.font = "10px sans-serif";
+      ctx.textAlign = "left";
+      ctx.fillText("30m consolidation", x0 + 4, yTop + 12);
+      ctx.restore();
+    }
+
+    function drawMoveIcon(cx, cy, active) {
+      const r = HANDLE_R;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fillStyle = active ? "rgba(232,184,74,0.35)" : "rgba(232,184,74,0.18)";
+      ctx.fill();
+      ctx.strokeStyle = active ? "#e8b84a" : "rgba(232,184,74,0.75)";
+      ctx.lineWidth = active ? 2 : 1.5;
+      ctx.stroke();
+
+      ctx.strokeStyle = "#e8b84a";
+      ctx.fillStyle = "#e8b84a";
+      ctx.lineWidth = 1.5;
+      const arm = 5;
+      const dirs = [[0, -arm], [0, arm], [-arm, 0], [arm, 0]];
+      for (const [dx, dy] of dirs) {
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(cx + dx, cy + dy);
+        ctx.stroke();
+        const tip = dy !== 0 ? (dy < 0 ? -1 : 1) : 0;
+        const side = dx !== 0 ? (dx < 0 ? -1 : 1) : 0;
+        if (tip) {
+          ctx.beginPath();
+          ctx.moveTo(cx, cy + dy);
+          ctx.lineTo(cx - 3, cy + dy - tip * 3);
+          ctx.lineTo(cx + 3, cy + dy - tip * 3);
+          ctx.closePath();
+          ctx.fill();
+        } else {
+          ctx.beginPath();
+          ctx.moveTo(cx + dx, cy);
+          ctx.lineTo(cx + dx - side * 3, cy - 3);
+          ctx.lineTo(cx + dx - side * 3, cy + 3);
+          ctx.closePath();
+          ctx.fill();
+        }
+      }
+    }
+
+    function drawGroupHandle(geom) {
+      if (!state.mouse.inPlot) return;
+      if (state.dragging === "entry" || state.dragging === "sl" || state.dragging === "tp") return;
+      if (hitTestLine(state.mouse.y)) return;
+
+      const hx = Math.min(Math.max(state.mouse.x, PAD.l + HANDLE_R), PAD.l + geom.plotW - HANDLE_R);
+      const hy = Math.min(Math.max(state.mouse.y, PAD.t + HANDLE_R), PAD.t + geom.plotH - HANDLE_R);
+      state.handlePos = { x: hx, y: hy };
+      drawMoveIcon(hx, hy, state.dragging === "group" || state.hover === "group");
+    }
+
+    function inPlotArea(x, y, geom) {
+      return x >= PAD.l && x <= PAD.l + geom.plotW && y >= PAD.t && y <= PAD.t + geom.plotH;
+    }
+
+    function hitTestLine(y) {
+      const geom = chartGeom();
+      for (const key of ["entry", "sl", "tp"]) {
+        const py = priceToY(state[key], geom);
+        if (Math.abs(y - py) <= LINE_HIT) return key;
+      }
+      return null;
+    }
+
+    function updateCanvasCursor() {
+      canvas.classList.remove("cursor-line", "cursor-group", "cursor-group-drag");
+      if (state.dragging === "group") {
+        canvas.classList.add("cursor-group-drag");
+      } else if (state.dragging) {
+        canvas.classList.add("cursor-line");
+      } else if (state.hover === "group") {
+        canvas.classList.add("cursor-group");
+      } else if (state.hover === "entry" || state.hover === "sl" || state.hover === "tp") {
+        canvas.classList.add("cursor-line");
+      }
+    }
+
+    function pointerPos(e) {
+      const rect = canvas.getBoundingClientRect();
+      return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    }
+
+    function onPointerDown(e) {
+      const { x, y } = pointerPos(e);
+      const geom = chartGeom();
+      const line = hitTestLine(y);
+      if (line) {
+        state.dragging = line;
+        state.dragAnchor = null;
+        updateCanvasCursor();
+        return;
+      }
+      if (inPlotArea(x, y, geom)) {
+        const hx = Math.min(Math.max(x, PAD.l + HANDLE_R), PAD.l + geom.plotW - HANDLE_R);
+        const hy = Math.min(Math.max(y, PAD.t + HANDLE_R), PAD.t + geom.plotH - HANDLE_R);
+        if (Math.hypot(x - hx, y - hy) <= HANDLE_R + 6) {
+          state.dragging = "group";
+          state.dragAnchor = {
+            entry: state.entry,
+            sl: state.sl,
+            tp: state.tp,
+            price: round2(yToPrice(y, geom)),
+          };
+          updateCanvasCursor();
+        }
+      }
+    }
+
+    function onPointerMove(e) {
+      const { x, y } = pointerPos(e);
+      const geom = chartGeom();
+      state.mouse = { x, y, inPlot: inPlotArea(x, y, geom) };
+
+      if (state.dragging === "group" && state.dragAnchor) {
+        const price = round2(yToPrice(y, geom));
+        const delta = price - state.dragAnchor.price;
+        state.entry = round2(state.dragAnchor.entry + delta);
+        state.sl = round2(state.dragAnchor.sl + delta);
+        state.tp = round2(state.dragAnchor.tp + delta);
+        syncInputs();
+        drawChart();
+        return;
+      }
+
+      if (state.dragging === "entry") {
+        state.entry = round2(yToPrice(y, geom));
+      } else if (state.dragging === "sl") {
+        state.sl = round2(yToPrice(y, geom));
+      } else if (state.dragging === "tp") {
+        state.tp = round2(yToPrice(y, geom));
+      }
+
+      if (state.dragging) {
+        syncInputs();
+        drawChart();
+        return;
+      }
+
+      const line = hitTestLine(y);
+      if (line) {
+        state.hover = line;
+      } else if (state.mouse.inPlot) {
+        state.hover = "group";
+      } else {
+        state.hover = null;
+      }
+      drawChart();
+    }
+
+    function onPointerUp() {
+      state.dragging = null;
+      state.dragAnchor = null;
+      updateCanvasCursor();
+      drawChart();
+    }
+
+    function onPointerLeave() {
+      if (state.dragging) return;
+      state.mouse.inPlot = false;
+      state.hover = null;
+      drawChart();
+    }
+
+    function buildPayload() {
+      const source = $("source").value.trim() || defaultSource();
+      if (!$("source").value.trim()) $("source").value = source;
+      return {
+        symbol: "XAUUSD",
+        direction: state.direction,
+        entry_price: round2(state.entry),
+        hard_stop: round2(state.sl),
+        take_profit: round2(state.tp),
+        max_idea_risk: parseFloat($("maxRisk").value) || 2.5,
+        lot_size: parseFloat($("lotSize").value) || 0.03,
+        source,
+      };
+    }
+
+    function renderCurl() {
+      const base = $("apiUrl").value.replace(/\/$/, "");
+      const json = JSON.stringify(buildPayload(), null, 2);
+      $("curlOut").textContent = `curl -X POST ${base}/signals \\\n  -H 'Content-Type: application/json' \\\n  -d '${json.replace(/'/g, "'\\''")}'`;
+    }
+
+    async function fetchCandles(forceReinit = false) {
+      const base = $("apiUrl").value.replace(/\/$/, "");
+      const mins = $("lookback").value;
+      const wasLoading = !state.lastFetchAt;
+      if (wasLoading) $("chartStatus").textContent = "Loading…";
+      try {
+        const res = await fetch(`${base}/tools/xauusd-candles?minutes=${mins}&_=${Date.now()}`);
+        if (!res.ok) throw new Error(res.statusText);
+        const data = await res.json();
+        state.candles = data.candles || [];
+        state.lastFetchAt = new Date();
+
+        if (data.last_mid && (!state.initialized || forceReinit)) {
+          state.entry = data.last_mid;
+          state.sl = round2(state.entry + (state.direction === "SELL" ? 5 : -5));
+          if (state.ratio) applyLevelsFromRatio("sl", true);
+          state.initialized = true;
+          saveOriginalLevels();
+        }
+
+        $("chartStatus").textContent = `${state.candles.length} bars · ${data.tick_count || 0} ticks · live`;
+        if (data.last_bid != null) {
+          $("livePrice").textContent = `Live ${data.last_bid} / ${data.last_ask}`;
+        }
+        if (data.last_mid != null) {
+          state.livePrice = round2(data.last_mid);
+        } else if (data.last_bid != null && data.last_ask != null) {
+          state.livePrice = round2((data.last_bid + data.last_ask) / 2);
+        }
+        state.recommendation = analyzeConsolidation(state.candles);
+        renderRecommendation();
+        syncInputs();
+        drawChart();
+      } catch (err) {
+        $("chartStatus").textContent = `Error: ${err.message}`;
+      }
+    }
+
+    canvas.addEventListener("mousedown", onPointerDown);
+    canvas.addEventListener("mouseenter", onPointerMove);
+    canvas.addEventListener("mouseleave", onPointerLeave);
+    window.addEventListener("mousemove", onPointerMove);
+    window.addEventListener("mouseup", onPointerUp);
+    canvas.addEventListener("touchstart", (e) => { e.preventDefault(); onPointerDown(e.touches[0]); }, { passive: false });
+    window.addEventListener("touchmove", (e) => { if (state.dragging) { e.preventDefault(); onPointerMove(e.touches[0]); } }, { passive: false });
+    window.addEventListener("touchend", () => onPointerUp());
+
+    window.addEventListener("resize", () => drawChart());
+
+    document.querySelectorAll("[data-dir]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll("[data-dir]").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        state.direction = btn.dataset.dir;
+        const risk = Math.abs(state.entry - state.sl);
+        const reward = Math.abs(state.entry - state.tp);
+        if (state.direction === "SELL") {
+          state.sl = round2(state.entry + risk);
+          state.tp = round2(state.entry - reward);
+        } else {
+          state.sl = round2(state.entry - risk);
+          state.tp = round2(state.entry + reward);
+        }
+        $("source").value = "";
+        syncInputs();
+        drawChart();
+      });
+    });
+
+    document.querySelectorAll("#ratioPresets .pill.ratio").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const risk = parseFloat(btn.dataset.risk);
+        const reward = parseFloat(btn.dataset.reward);
+        if (!risk && !reward) {
+          state.ratio = 0;
+          state.ratioRisk = 0;
+          state.ratioReward = 0;
+          setActiveRatioButton(0, 0);
+        } else {
+          applyRatio(risk, reward, true);
+        }
+        syncInputs();
+        drawChart();
+      });
+    });
+
+    $("applyCustomRR").addEventListener("click", () => {
+      const risk = parseFloat($("customRisk").value);
+      const reward = parseFloat($("customReward").value);
+      if (!risk || !reward || risk <= 0 || reward <= 0) return;
+      applyRatio(risk, reward, true);
+      syncInputs();
+      drawChart();
+    });
+
+    $("applyRecBtn").addEventListener("click", applyRecommendation);
+
+    $("lockRR").addEventListener("change", () => {
+      state.lockRR = $("lockRR").checked;
+      if (state.lockRR && state.ratio) applyLevelsFromRatio("sl");
+      syncInputs();
+      drawChart();
+    });
+
+    ["inpEntry", "inpSl", "inpTp"].forEach((id) => {
+      $(id).addEventListener("change", () => {
+        const v = parseFloat($(id).value);
+        if (!v) return;
+        if (id === "inpEntry") {
+          state.entry = round2(v);
+          if (state.lockRR && state.ratio) applyLevelsFromRatio("entry");
+        }
+        if (id === "inpSl") {
+          state.sl = round2(v);
+          if (state.lockRR && state.ratio) applyLevelsFromRatio("sl");
+        }
+        if (id === "inpTp") {
+          state.tp = round2(v);
+          if (state.lockRR && state.ratio) applyLevelsFromRatio("tp");
+        }
+        syncInputs();
+        drawChart();
+      });
+    });
+
+    ["lotSize", "maxRisk", "apiUrl", "source"].forEach((id) => {
+      $(id).addEventListener("input", renderCurl);
+    });
+
+    $("lookback").addEventListener("change", fetchCandles);
+    $("refreshBtn").addEventListener("click", () => fetchCandles(false));
+    $("resetBtn").addEventListener("click", resetLevels);
+
+    $("copyBtn").addEventListener("click", async () => {
+      const text = $("curlOut").textContent;
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      $("copyBtn").textContent = "Copied!";
+      $("copyBtn").classList.add("copied");
+      setTimeout(() => {
+        $("copyBtn").textContent = "Copy curl";
+        $("copyBtn").classList.remove("copied");
+      }, 2000);
+    });
+
+    $("source").value = defaultSource();
+    fetchCandles(false);
+    setInterval(() => fetchCandles(false), POLL_MS);
+    drawChart();
+  </script>
+</body>
+</html>

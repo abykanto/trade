@@ -17,6 +17,39 @@ def position_direction(position: Any) -> Direction | None:
     return None
 
 
+def find_idea_position(
+    positions: list,
+    direction: str | Direction,
+    magic: int,
+    volume: float | None = None,
+    entry_price: float | None = None,
+) -> int | None:
+    """Best-effort match of an MT5 position to an idea (magic + direction)."""
+    wanted = Direction.parse(direction)
+    candidates = []
+    for p in positions:
+        if getattr(p, "magic", 0) != magic:
+            continue
+        if position_direction(p) != wanted:
+            continue
+        if volume is not None and abs(getattr(p, "volume", 0.0) - volume) > 0.0001:
+            continue
+        candidates.append(p)
+
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        ticket = getattr(candidates[0], "ticket", None)
+        return int(ticket) if ticket else None
+    if entry_price is not None:
+        candidates.sort(
+            key=lambda p: abs(getattr(p, "price_open", 0.0) - entry_price)
+        )
+        ticket = getattr(candidates[0], "ticket", None)
+        return int(ticket) if ticket else None
+    return None
+
+
 def resolve_position_ticket(
     positions: list,
     order_ticket: int,

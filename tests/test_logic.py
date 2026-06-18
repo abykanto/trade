@@ -114,6 +114,27 @@ def test_position_sizing_engine():
     )
     assert lot_size_max == 100.0
 
+
+def test_resolve_volume_predefined_overrides_dynamic_cap():
+    contract = __import__("src.market.contract", fromlist=["SymbolContract"]).SymbolContract.for_symbol("XAUUSD")
+    volume, source = PositionSizingEngine.resolve_volume(
+        contract, risk_amount=2.5, entry=4240.0, stop=4245.0,
+        predefined_lot=0.03, max_lot_size=0.02,
+    )
+    assert source == "predefined"
+    assert volume == 0.03
+
+
+def test_resolve_volume_dynamic_capped_at_max_lot():
+    contract = __import__("src.market.contract", fromlist=["SymbolContract"]).SymbolContract.for_symbol("XAUUSD")
+    volume, source = PositionSizingEngine.resolve_volume(
+        contract, risk_amount=25.0, entry=4240.0, stop=4245.0,
+        predefined_lot=None, max_lot_size=0.02,
+    )
+    assert source == "dynamic"
+    assert volume == 0.02
+
+
 def test_daily_loss_limit(db_session):
     manager = PortfolioRiskManager(daily_dd_pct=0.07, max_account_risk_percent=10.0) # 7% limit
     

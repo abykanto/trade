@@ -61,7 +61,7 @@ def test_filled_order_open_position():
     assert outcome.fill_price == 1.1482
 
 
-def test_cancelled_order_requeues_not_open():
+def test_cancelled_order_detected():
     outcome = resolve_pending_order_outcome(
         order_ticket=100,
         symbol="EURUSD",

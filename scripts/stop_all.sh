@@ -4,6 +4,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PID_DIR="$ROOT/run"
 
+if [[ -f "$ROOT/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/.env"
+  set +a
+fi
+
 stop_pid_file() {
   local name="$1"
   local file="$PID_DIR/$name.pid"
@@ -25,5 +32,16 @@ stop_pid_file mt5_terminal
 
 pkill -f "src.main" 2>/dev/null || true
 pkill -f "src.api.server:app" 2>/dev/null || true
+pkill -f "mt5linux" 2>/dev/null || true
+pkill -f "terminal64.exe" 2>/dev/null || true
 
-echo "Trade system stopped."
+if command -v fuser >/dev/null 2>&1; then
+  fuser -k "${MT5_PORT:-18812}/tcp" 2>/dev/null || true
+fi
+
+export WINEPREFIX="${WINEPREFIX:-$HOME/.wine}"
+if command -v wineserver >/dev/null 2>&1; then
+  wineserver -k 2>/dev/null || true
+fi
+
+echo "Trade system stopped (API, manager, MT5 RPyC, Wine/MT5 terminal)."

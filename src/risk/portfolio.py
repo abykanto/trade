@@ -1,4 +1,5 @@
 import logging
+import os
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import datetime, date, timezone
@@ -120,6 +121,39 @@ class PortfolioRiskManager:
 
 class PositionSizingEngine:
     """Thin facade over SymbolContract — keeps existing call sites stable."""
+
+    @staticmethod
+    def _clamp_lot(volume: float, contract: SymbolContract) -> float:
+        if contract.lot_step > 0:
+            volume = round(volume / contract.lot_step) * contract.lot_step
+        return max(contract.lot_min, min(volume, contract.lot_max))
+
+    @staticmethod
+    def resolve_volume(
+        contract: SymbolContract,
+        risk_amount: float,
+        entry: float,
+        stop: float,
+        predefined_lot: float | None = None,
+        max_lot_size: float | None = None,
+    ) -> tuple[float, str]:
+        """Pick entry volume: predefined idea/signal lot, else risk-based (capped)."""
+        if predefined_lot is not None and predefined_lot > 0:
+            return (
+                PositionSizingEngine._clamp_lot(predefined_lot, contract),
+                "predefined",
+            )
+        volume = contract.lot_size_for_risk(risk_amount, entry, stop)
+        if max_lot_size is not None and max_lot_size > 0:
+            volume = min(volume, max_lot_size)
+        return PositionSizingEngine._clamp_lot(volume, contract), "dynamic"
+
+    @staticmethod
+    def max_lot_size_from_env() -> float | None:
+        raw = os.environ.get("MAX_LOT_SIZE")
+        if raw is None or raw.strip() == "":
+            return None
+        return float(raw)
 
     @staticmethod
     def calculate_lot_size(

@@ -4,6 +4,8 @@ import pytest
 
 from src.market.pending_entry import (
     PendingOrderKind,
+    entry_inside_spread,
+    entry_market_side,
     fill_price_violates_entry,
     pending_would_fill_immediately,
     plan_pending_entry,
@@ -35,6 +37,19 @@ def test_buy_stop_refused_when_ask_at_entry():
 def test_sell_below_market_uses_sell_stop():
     kind = select_pending_order_kind("SELL", 4290.0, bid=4300.0, ask=4300.2)
     assert kind == PendingOrderKind.SELL_STOP
+
+
+def test_sell_above_market_uses_sell_limit():
+    kind = select_pending_order_kind("SELL", 1.15, bid=1.14, ask=1.1402)
+    assert kind == PendingOrderKind.SELL_LIMIT
+    assert not pending_would_fill_immediately(kind, 1.15, 1.14, 1.1402)
+
+
+def test_entry_market_side_for_reentry():
+    assert entry_market_side("SELL", 1.15, bid=1.16, ask=1.1602) == "market_above_entry"
+    assert entry_market_side("SELL", 1.15, bid=1.14, ask=1.1402) == "market_below_entry"
+    assert entry_market_side("BUY", 4290.0, bid=4277.0, ask=4277.2) == "market_below_entry"
+    assert entry_market_side("BUY", 4290.0, bid=4291.0, ask=4291.5) == "market_above_entry"
 
 
 def test_plan_cannot_place_without_mt5_type():

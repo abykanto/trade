@@ -1,11 +1,16 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 import hashlib
 from datetime import timedelta
 import logging
+from pathlib import Path
 
 from src.core.models import TradeIdea, TradeEvent, utcnow
 from src.core.database import init_db, get_session_local
+from src.market.candles import load_xauusd_1m_candles
+
+TOOLS_DIR = Path(__file__).resolve().parents[2] / "tools"
 
 logging.basicConfig(level=logging.INFO, 
                     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
@@ -25,6 +30,7 @@ class SignalPayload(BaseModel):
     take_profit: float
     max_idea_risk: float = Field(..., gt=0.0)
     max_retries: int = Field(default=25, gt=0)
+    lot_size: float | None = Field(default=None, gt=0.0)
     source: str = "API"
     entry_zone_size: float = Field(default=0.001, ge=0.0) # E.g., 0.1%
     expires_in_days: int = Field(default=5, ge=1)
@@ -134,6 +140,7 @@ def receive_signal(payload: SignalPayload, db = Depends(get_db)):
         
         max_idea_risk=payload.max_idea_risk,
         max_retries=payload.max_retries,
+        lot_size=payload.lot_size,
         
         expires_at=expires_at
     )
@@ -153,6 +160,22 @@ def receive_signal(payload: SignalPayload, db = Depends(get_db)):
 
     logger.info(f"Accepted new trade idea for {payload.symbol}")
     return {"status": "accepted", "idea_id": new_idea.id}
+
+
+@app.get("/tools/xauusd-signal")
+def xauusd_signal_tool():
+    """XAUUSD curl generator with interactive chart (SL:TP 1:4 / 1:5)."""
+    path = TOOLS_DIR / "xauusd_signal.html"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Tool page not found")
+    return FileResponse(path, media_type="text/html")
+
+
+@app.get("/tools/xauusd-candles")
+def xauusd_candles(minutes: int = Query(default=180, ge=5, le=1440)):
+    """1-minute OHLC from parquet tick logs for the signal chart tool."""
+    return load_xauusd_1m_candles(lookback_minutes=minutes)
+
 
 @app.get("/ideas/{idea_id}")
 def get_idea(idea_id: int, db = Depends(get_db)):
