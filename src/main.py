@@ -10,6 +10,8 @@ from src.core.models import (
     TradeIdea, TradeState, SymbolState, ExecutionRequest,
     TradeAttempt, TradeEvent, OpenPosition, ExecutionState, utcnow
 )
+from sqlalchemy import func
+
 from src.core.database import init_db, get_session_local, as_utc
 from src.core.config import load_trading_config, TradingConfig
 from src.execution.bridge import MT5Bridge, ConnectionState
@@ -440,29 +442,44 @@ class TradeManager:
             f"{idea.original_entry} ({exit_reason})"
         )
 
-    def _invalidate_user_removed_pending(
+    @staticmethod
+    def _next_attempt_number(session, idea_id: int) -> int:
+        last = session.query(func.max(TradeAttempt.attempt_number)).filter_by(
+            trade_idea_id=idea_id,
+        ).scalar()
+        return int(last or 0) + 1
+
+    async def _requeue_pending_lost(
         self,
         session,
         idea: TradeIdea,
         attempt: TradeAttempt,
+        symbol: str,
+        contract: SymbolContract,
         exit_reason: str,
-        event_type: str = "IDEA_INVALIDATED",
         extra: dict | None = None,
-    ) -> None:
-        """Kill the idea when its resting pending order was removed from MT5 (manual cancel)."""
-        attempt.execution_state = ExecutionState.CANCELLED.value
-        attempt.exit_reason = exit_reason
-        idea.state = TradeState.IDEA_INVALIDATED.value
-        payload = {"reason": exit_reason, "entry": idea.original_entry}
-        if extra:
-            payload.update(extra)
-        self._log_event(session, idea.id, event_type, payload)
-        idea.version += 1
-        session.commit()
-        logger.info(
-            f"[{idea.symbol}] Idea {idea.id} invalidated: pending order removed "
-            f"from MT5 ({exit_reason})"
+    ) -> bool:
+        """Re-place pending after a vanished order unless a live position is found."""
+        if await self._try_recover_open_position(session, idea, symbol, attempt, contract):
+            return True
+        positions = await self.bridge.get_positions(symbol)
+        if positions:
+            pos_ticket = find_idea_position(
+                positions,
+                idea.direction,
+                self.bridge.magic,
+                volume=attempt.volume,
+                entry_price=attempt.entry_price,
+            )
+            if pos_ticket is not None:
+                await self._register_trade_open(
+                    session, idea, attempt, symbol, pos_ticket, contract,
+                )
+                return True
+        await self._requeue_pre_entry(
+            session, idea, attempt, exit_reason, "PENDING_LOST_REQUEUE", extra,
         )
+        return True
 
     async def _cancel_mismatched_reentry_pending(
         self,
@@ -648,22 +665,18 @@ class TradeManager:
             return True
 
         if outcome.status == "cancelled":
-            self._invalidate_user_removed_pending(
-                session, idea, attempt, "MT5_CANCELLED_BY_USER",
+            return await self._requeue_pending_lost(
+                session, idea, attempt, symbol, pending_contract,
+                "MT5_ORDER_CANCELLED",
                 extra={"ticket": attempt.mt5_ticket},
             )
-            return True
 
         if outcome.status == "missing":
-            if await self._try_recover_open_position(
-                session, idea, symbol, attempt, pending_contract
-            ):
-                return True
-            self._invalidate_user_removed_pending(
-                session, idea, attempt, "PENDING_REMOVED_FROM_MT5",
+            return await self._requeue_pending_lost(
+                session, idea, attempt, symbol, pending_contract,
+                "PENDING_MISSING_REQUEUE",
                 extra={"ticket": attempt.mt5_ticket},
             )
-            return True
 
         return False
 
@@ -696,6 +709,7 @@ class TradeManager:
         attempt.pnl = pnl_dollars
         attempt.closed_at = utcnow()
         attempt.exit_reason = exit_reason
+        attempt.execution_state = ExecutionState.CLOSED.value
         idea.realized_pnl += pnl_dollars
         session.delete(open_pos)
 
@@ -744,18 +758,26 @@ class TradeManager:
                 await asyncio.sleep(1.0)
                 await self._arm_reentry_pending(session, idea, symbol, contract)
         elif exit_reason == "TRAILING_STOP":
+            idea.retries_used += 1
             self._log_event(session, idea.id, "EARLY_EXIT", {
                 "pnl": pnl_dollars,
                 "consumed_risk": idea.consumed_risk,
                 "exit_reason": exit_reason,
                 "chop_sl": chop_sl,
             })
-            idea.state = TradeState.WAITING_FOR_REENTRY.value
-            idea.hard_stop = idea.original_hard_stop
-            self._log_event(session, idea.id, "WAITING_FOR_REENTRY", {
-                "remaining_risk": idea.max_idea_risk - idea.consumed_risk
-            })
-            await self._arm_reentry_pending(session, idea, symbol, contract)
+            if idea.retries_used >= idea.max_retries:
+                idea.state = TradeState.IDEA_INVALIDATED.value
+                self._log_event(session, idea.id, "IDEA_INVALIDATED", {
+                    "reason": "MAX_RETRIES", "retries_used": idea.retries_used,
+                })
+            else:
+                idea.state = TradeState.WAITING_FOR_REENTRY.value
+                idea.hard_stop = idea.original_hard_stop
+                self._log_event(session, idea.id, "WAITING_FOR_REENTRY", {
+                    "remaining_risk": idea.max_idea_risk - idea.consumed_risk
+                })
+                await asyncio.sleep(1.0)
+                await self._arm_reentry_pending(session, idea, symbol, contract)
         else:
             self._log_event(session, idea.id, "EARLY_EXIT", {
                 "pnl": pnl_dollars,
@@ -930,9 +952,24 @@ class TradeManager:
                 with self.SessionLocal() as session:
                     idea = session.query(TradeIdea).get(req.idea_id)
                     attempt = session.query(TradeAttempt).filter_by(
-                        trade_idea_id=idea.id, attempt_number=req.attempt_number
-                    ).first()
-                    
+                        trade_idea_id=idea.id,
+                        execution_state=ExecutionState.PENDING.value,
+                    ).order_by(TradeAttempt.id.desc()).first()
+                    if attempt is None:
+                        attempt = session.query(TradeAttempt).filter_by(
+                            trade_idea_id=idea.id, attempt_number=req.attempt_number
+                        ).first()
+                    if attempt is None:
+                        logger.error(
+                            f"[{req.symbol}] No PENDING attempt for idea {idea.id} "
+                            f"(attempt_number={req.attempt_number})"
+                        )
+                        idea.state = self._pre_entry_waiting_state(idea)
+                        idea.version += 1
+                        session.commit()
+                        self.execution_queue.task_done()
+                        continue
+
                     if result and result.retcode == 10009: # TRADE_RETCODE_DONE
                         attempt.execution_state = ExecutionState.SUBMITTED.value
                         attempt.mt5_ticket = getattr(result, 'order', 0)
@@ -1198,7 +1235,7 @@ class TradeManager:
                                 session.commit()
                                 continue
                             
-                            attempt_num = idea.retries_used + 1
+                            attempt_num = self._next_attempt_number(session, idea.id)
                             attempt = TradeAttempt(
                                 trade_idea_id=idea.id,
                                 attempt_number=attempt_num,
@@ -1251,7 +1288,7 @@ class TradeManager:
 
                             # Resolve fill / close / cancel before limit↔stop maintenance
                             outcome = None
-                            for _ in range(40):
+                            for _ in range(60):
                                 outcome = await self.bridge.resolve_pending_order_outcome(
                                     symbol=symbol,
                                     order_ticket=attempt.mt5_ticket,
@@ -1262,7 +1299,7 @@ class TradeManager:
                                 )
                                 if outcome.status != "missing":
                                     break
-                                await asyncio.sleep(0.05)
+                                await asyncio.sleep(0.1)
 
                             if outcome and outcome.status != "pending":
                                 if await self._handle_pending_order_outcome(

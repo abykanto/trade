@@ -374,3 +374,14 @@ def test_api_rejects_sell_with_buy_levels():
 def test_api_accepts_sell_levels():
     from src.api.server import _validate_signal_levels
     _validate_signal_levels("SELL", 4250.0, 4260.0, 4230.0)
+
+
+def test_next_attempt_number_increments_per_idea():
+    from unittest.mock import MagicMock
+    from src.main import TradeManager
+
+    session = MagicMock()
+    session.query.return_value.filter_by.return_value.scalar.return_value = 3
+    assert TradeManager._next_attempt_number(session, 1) == 4
+    session.query.return_value.filter_by.return_value.scalar.return_value = None
+    assert TradeManager._next_attempt_number(session, 1) == 1
