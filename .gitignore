@@ -26,10 +26,9 @@ run/
 data/
 *.parquet
 
-# Environment / secrets (keep .env.example as the committed template)
-.env
-.env.*
-!.env.example
+# Local env overrides (.env and .env.example are tracked for reference)
+.env.local
+.env.*.local
 
 # MQL5 / MetaTrader build artifacts
 *.ex5
