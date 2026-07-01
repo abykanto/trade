@@ -30,7 +30,7 @@ def test_ticks_to_1m_candles_ohlc():
 
 def test_load_xauusd_1m_candles_from_parquet(tmp_path: Path):
     logger = XauusdPriceParquetLogger(output_dir=tmp_path, flush_every_rows=1)
-    t0 = datetime(2026, 6, 18, 12, 0, 10, tzinfo=timezone.utc)
+    t0 = datetime.now(timezone.utc).replace(second=10, microsecond=0)
     logger.record_tick(4244.0, 4244.2, utc_now=t0)
     logger.record_tick(4245.0, 4245.2, utc_now=t0.replace(second=40))
 

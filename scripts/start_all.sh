@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VENV="/home/privatecirle/Documents/tr/.venv"
+VENV="${VENV:-$ROOT/.venv}"
 
 if [[ -f "$ROOT/.env" ]]; then
   set -a
@@ -26,15 +26,28 @@ mkdir -p "$LOG_DIR" "$PID_DIR"
 WINE_PYTHON="$WINEPREFIX/drive_c/Program Files/Python312/python.exe"
 MT5_TERMINAL="$WINEPREFIX/drive_c/Program Files/MetaTrader 5/terminal64.exe"
 
+configure_mt5_terminal() {
+  echo "Configuring MT5 for algo trading (common.ini)..."
+  python3 "$ROOT/scripts/configure_mt5_terminal.py"
+}
+
 start_mt5_terminal() {
   if pgrep -f "terminal64.exe" >/dev/null 2>&1; then
-    echo "MT5 terminal already running"
+    echo "MT5 terminal already running (common.ini updated for next restart)"
     return
   fi
   echo "Starting MT5 terminal..."
   nohup wine "$MT5_TERMINAL" >/dev/null 2>&1 &
   echo $! > "$PID_DIR/mt5_terminal.pid"
   sleep 8
+}
+
+ensure_algo_trading() {
+  echo "Verifying MT5 algo trading..."
+  if "$VENV/bin/python" "$ROOT/scripts/ensure_mt5_algo_trading.py" --toggle; then
+    return
+  fi
+  echo "Warning: could not confirm algo trading is enabled — check the green toolbar button in MT5" >&2
 }
 
 start_mt5linux_server() {
@@ -79,8 +92,10 @@ start_manager() {
   sleep 2
 }
 
+configure_mt5_terminal
 start_mt5_terminal
 start_mt5linux_server
+ensure_algo_trading
 start_api
 start_manager
 

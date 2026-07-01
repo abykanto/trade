@@ -10,11 +10,13 @@ from src.core.models import (
     TradeIdea, TradeState, SymbolState, ExecutionRequest,
     TradeAttempt, TradeEvent, OpenPosition, ExecutionState, utcnow
 )
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
 from src.core.database import init_db, get_session_local, as_utc
 from src.core.config import load_trading_config, TradingConfig
-from src.execution.bridge import MT5Bridge, ConnectionState
+from src.execution.factory import create_execution_bridge
+from src.execution.bridge import ConnectionState
+from src.execution.ea_bridge import EABridge
 from src.execution.trailing import TrailingStopEngine
 from src.risk.quant_filters import SessionManager, LiquidityFilter
 from src.risk.portfolio import PortfolioRiskManager, PositionSizingEngine
@@ -26,7 +28,10 @@ from src.market.position import (
 from src.market.contract import SymbolContract
 from src.market.tick import MarketTick
 from src.market.levels import TradeLevels
-from src.market.pending_entry import entry_market_side
+from src.market.pending_entry import entry_market_side, ready_for_initial_entry_placement
+from src.market.deal_history import order_matches_attempt
+from src.market.bot_orders import is_bot_placed_order
+from src.market.order_outcome import PendingOrderOutcome
 from src.market.price_logger import XauusdPriceParquetLogger
 
 logging.basicConfig(level=logging.INFO, 
@@ -44,19 +49,23 @@ class TradeManager:
         self.symbol_states: Dict[str, SymbolState] = {}
         self.execution_queue = asyncio.Queue()
         
-        self.bridge = MT5Bridge()
+        self.bridge = create_execution_bridge()
         self.session_manager = SessionManager()
         self.liquidity_filter = LiquidityFilter()
         self.trailing_engine = TrailingStopEngine(progressive_secure_percentage=0.6)
         self.risk_manager = PortfolioRiskManager(
             daily_dd_pct=float(os.environ.get("DAILY_DD_PCT", "0.03")),
-            max_account_risk_percent=float(os.environ.get("MAX_ACCOUNT_RISK_PCT", "5.0")),
+            max_account_risk_percent=float(os.environ.get("MAX_ACCOUNT_RISK_PCT", "6.0")),
         )
         self.price_parquet_logger = XauusdPriceParquetLogger(
-            flush_every_rows=int(os.environ.get("PRICE_LOG_FLUSH_ROWS", "1")),
+            flush_every_rows=int(os.environ.get("PRICE_LOG_FLUSH_ROWS", "30")),
         )
         
         self.tasks = []
+        self._entry_zone_defer_logged: set[int] = set()
+        self._ea_symbol_wake: set[str] = set()
+        self._ea_force_resolve_symbols: set[str] = set()
+        self._bot_cancelled_tickets: set[int] = set()
         
     def _log_event(self, session, idea_id: int, event_type: str, data: dict = None):
         event = TradeEvent(
@@ -65,6 +74,49 @@ class TradeManager:
             event_data=json.dumps(data) if data else None
         )
         session.add(event)
+
+    async def _cancel_pending_order_as_bot(self, ticket: int):
+        """Record a bot-initiated cancel so external deletes can be distinguished."""
+        if ticket:
+            self._bot_cancelled_tickets.add(int(ticket))
+        return await self.bridge.cancel_pending_order(ticket)
+
+    def _is_external_order_cancel(
+        self, ticket: int, outcome: PendingOrderOutcome
+    ) -> bool:
+        """True when MT5 shows CANCELLED but this process did not request it."""
+        ticket = int(ticket or 0)
+        if ticket in self._bot_cancelled_tickets:
+            return False
+        if not is_bot_placed_order(
+            magic=int(outcome.order_magic or 0),
+            bot_magic=self.bridge.magic,
+            comment=outcome.order_comment,
+        ):
+            return True
+        return True
+
+    async def _invalidate_external_order_cancel(
+        self,
+        session,
+        idea: TradeIdea,
+        attempt: TradeAttempt,
+        outcome: PendingOrderOutcome,
+    ) -> None:
+        attempt.execution_state = ExecutionState.CANCELLED.value
+        attempt.exit_reason = "EXTERNAL_CANCEL"
+        idea.state = TradeState.IDEA_INVALIDATED.value
+        self._log_event(session, idea.id, "EXTERNAL_ORDER_CANCELLED", {
+            "ticket": attempt.mt5_ticket,
+            "comment": outcome.order_comment,
+            "magic": outcome.order_magic,
+        })
+        idea.version += 1
+        session.commit()
+        logger.info(
+            f"[{idea.symbol}] Idea {idea.id} invalidated: pending order "
+            f"{attempt.mt5_ticket} cancelled externally in MT5"
+        )
 
     @staticmethod
     def _final_hard_sl_breached(idea: TradeIdea, price: float) -> bool:
@@ -157,7 +209,12 @@ class TradeManager:
                 ticket=pos_ticket, symbol=symbol,
                 direction=pos_dir.value, volume=volume,
             )
-            return close_res is not None
+            if close_res is None:
+                logger.error(
+                    f"[{symbol}] Emergency close failed for position {pos_ticket} "
+                    f"after chop SL could not be set"
+                )
+            return False
         return False
 
     async def _recover_or_block_reentry(
@@ -200,6 +257,7 @@ class TradeManager:
         )
         idea.hard_stop = chop_sl
         attempt.execution_state = ExecutionState.FILLED.value
+        attempt.opened_at = utcnow()
         idea.state = TradeState.TRADE_OPEN.value
 
         existing = session.query(OpenPosition).filter_by(trade_idea_id=idea.id).first()
@@ -306,7 +364,7 @@ class TradeManager:
         ).order_by(TradeAttempt.id.desc()).first()
 
         if attempt and attempt.mt5_ticket:
-            cancel_res = await self.bridge.cancel_pending_order(attempt.mt5_ticket)
+            cancel_res = await self._cancel_pending_order_as_bot(attempt.mt5_ticket)
             if cancel_res is None:
                 spec = await self.bridge.get_symbol_spec(idea.symbol)
                 contract = (
@@ -384,18 +442,29 @@ class TradeManager:
         )
         idea.hard_stop = chop_sl
         attempt.execution_state = ExecutionState.FILLED.value
+        attempt.opened_at = utcnow()
         idea.state = TradeState.TRADE_OPEN.value
 
-        session.add(OpenPosition(
-            trade_idea_id=idea.id,
-            mt5_ticket=pos_ticket,
-            symbol=symbol,
-            direction=idea.direction,
-            volume=attempt.volume,
-            entry_price=attempt.entry_price,
-            current_stop=chop_sl,
-            current_tp=idea.take_profit,
-        ))
+        existing = session.query(OpenPosition).filter_by(trade_idea_id=idea.id).first()
+        if existing:
+            existing.mt5_ticket = pos_ticket
+            existing.symbol = symbol
+            existing.direction = idea.direction
+            existing.volume = attempt.volume
+            existing.entry_price = attempt.entry_price
+            existing.current_stop = chop_sl
+            existing.current_tp = idea.take_profit
+        else:
+            session.add(OpenPosition(
+                trade_idea_id=idea.id,
+                mt5_ticket=pos_ticket,
+                symbol=symbol,
+                direction=idea.direction,
+                volume=attempt.volume,
+                entry_price=attempt.entry_price,
+                current_stop=chop_sl,
+                current_tp=idea.take_profit,
+            ))
         self._log_event(session, idea.id, "ENTRY", {
             "ticket": pos_ticket,
             "order_ticket": attempt.mt5_ticket,
@@ -513,7 +582,7 @@ class TradeManager:
             if otype == expected_type:
                 continue
 
-            cancel_res = await self.bridge.cancel_pending_order(ticket)
+            cancel_res = await self._cancel_pending_order_as_bot(ticket)
             if cancel_res is None:
                 logger.warning(
                     f"[{symbol}] Could not cancel mismatched pending {ticket} "
@@ -619,6 +688,7 @@ class TradeManager:
             fill_price = outcome.fill_price or attempt.entry_price
             close_price = outcome.close_price or fill_price
             attempt.execution_state = ExecutionState.FILLED.value
+            attempt.opened_at = utcnow()
             open_pos = OpenPosition(
                 trade_idea_id=idea.id,
                 mt5_ticket=outcome.position_ticket or 0,
@@ -652,12 +722,18 @@ class TradeManager:
                 pos_dir = position_direction(pos) if pos else None
                 vol = getattr(pos, "volume", 0.0) if pos else 0.0
                 if pos_dir and vol > 0:
-                    await self.bridge.close_position(
+                    close_res = await self.bridge.close_position(
                         ticket=outcome.position_ticket,
                         symbol=symbol,
                         direction=pos_dir.value,
                         volume=vol,
                     )
+                    if close_res is None:
+                        logger.error(
+                            f"[{symbol}] Failed to close bad-fill position "
+                            f"{outcome.position_ticket} for idea {idea.id} — will retry"
+                        )
+                        return True
             await self._requeue_pre_entry(
                 session, idea, attempt, "BAD_FILL_AT_MARKET", "BAD_FILL_REQUEUE",
                 {"fill_price": outcome.fill_price, "requested": attempt.entry_price},
@@ -665,6 +741,14 @@ class TradeManager:
             return True
 
         if outcome.status == "cancelled":
+            ticket = int(attempt.mt5_ticket or 0)
+            if self._is_external_order_cancel(ticket, outcome):
+                self._bot_cancelled_tickets.discard(ticket)
+                await self._invalidate_external_order_cancel(
+                    session, idea, attempt, outcome,
+                )
+                return True
+            self._bot_cancelled_tickets.discard(ticket)
             return await self._requeue_pending_lost(
                 session, idea, attempt, symbol, pending_contract,
                 "MT5_ORDER_CANCELLED",
@@ -693,6 +777,7 @@ class TradeManager:
         contract: SymbolContract,
         hard_stop_at_close: float | None = None,
         elapsed_time: timedelta | None = None,
+        pnl_dollars: float | None = None,
     ):
         """Record a closed attempt and transition idea state after exit."""
         if exit_reason == "MT5_STOP":
@@ -701,9 +786,10 @@ class TradeManager:
                 idea.direction, close_price, chop_sl, hard_stop, contract
             )
 
-        pnl_dollars = contract.dollar_pnl(
-            idea.direction, attempt.entry_price, close_price, attempt.volume
-        )
+        if pnl_dollars is None:
+            pnl_dollars = contract.dollar_pnl(
+                idea.direction, attempt.entry_price, close_price, attempt.volume
+            )
 
         attempt.exit_price = close_price
         attempt.pnl = pnl_dollars
@@ -792,12 +878,40 @@ class TradeManager:
         TradeState.WAITING_FOR_SETUP.value,
         TradeState.WAITING_FOR_REENTRY.value,
         TradeState.PENDING_ORDER_PLACED.value,
-        "SUBMITTING_ORDER",
+        TradeState.SUBMITTING_ORDER.value,
     })
+
+    def _worker_sleep_sec(self, symbol: str, ideas: list) -> float:
+        """Shorter loop when placing or monitoring pre-entry ideas (HFT-style wake)."""
+        if symbol in self._ea_symbol_wake:
+            self._ea_symbol_wake.discard(symbol)
+            return 0.0
+        fast = float(os.environ.get("WORKER_LOOP_FAST_SEC", "0.01"))
+        idle = float(os.environ.get("WORKER_LOOP_IDLE_SEC", "0.1"))
+        states = {getattr(i, "state", "") for i in ideas}
+        if states & self._PRE_ENTRY_STATES:
+            return fast
+        if TradeState.TRADE_OPEN.value in states:
+            return fast
+        return idle
+
+    async def _on_ea_trade_event(self, msg: dict) -> None:
+        """Wake symbol workers when the EA pushes fill/close events."""
+        symbol = str(msg.get("symbol", "") or "")
+        event = str(msg.get("event", "") or "")
+        if not symbol:
+            return
+        self._ea_symbol_wake.add(symbol)
+        if event in ("POSITION_OPENED", "POSITION_CLOSED", "DEAL_ADD", "ORDER_ADD"):
+            self._ea_force_resolve_symbols.add(symbol)
+            logger.debug("EA trade event %s on %s — fast resolve wake", event, symbol)
 
     async def start(self):
         self.running = True
         logger.info("Starting Modular Trade Manager...")
+        
+        if isinstance(self.bridge, EABridge):
+            self.bridge.set_trade_event_handler(self._on_ea_trade_event)
         
         if not await self.bridge.connect():
             logger.warning("Failed to connect to MT5. Will attempt reconnection in loop.")
@@ -833,44 +947,192 @@ class TradeManager:
             running_flag=lambda: self.running,
         )
 
+    def _match_orphan_order_to_attempt(self, session, order) -> tuple[TradeIdea, TradeAttempt] | None:
+        """Link an untracked MT5 pending order to a DB attempt without a ticket."""
+        symbol = getattr(order, "symbol", "")
+        if not symbol:
+            return None
+
+        ideas = session.query(TradeIdea).filter(
+            TradeIdea.symbol == symbol,
+            TradeIdea.state.in_([
+                TradeState.SUBMITTING_ORDER.value,
+                TradeState.PENDING_ORDER_PLACED.value,
+                TradeState.WAITING_FOR_SETUP.value,
+                TradeState.WAITING_FOR_REENTRY.value,
+            ]),
+        ).all()
+
+        for idea in ideas:
+            attempt = session.query(TradeAttempt).filter(
+                TradeAttempt.trade_idea_id == idea.id,
+                TradeAttempt.execution_state.in_([
+                    ExecutionState.PENDING.value,
+                    ExecutionState.SUBMITTED.value,
+                ]),
+                or_(TradeAttempt.mt5_ticket.is_(None), TradeAttempt.mt5_ticket == 0),
+            ).order_by(TradeAttempt.id.desc()).first()
+            if attempt is None:
+                continue
+
+            spec = SymbolContract.for_symbol(symbol)
+            if order_matches_attempt(
+                order,
+                symbol=symbol,
+                direction=idea.direction,
+                entry_price=attempt.entry_price,
+                volume=attempt.volume,
+                tick_size=spec.tick_size,
+            ):
+                return idea, attempt
+        return None
+
+    async def _reconcile_orphan_orders_on_startup(self, session) -> None:
+        """Attach live MT5 pending orders that have no ticket in the DB."""
+        mt5_orders = await self.bridge.get_orders()
+        if not mt5_orders:
+            return
+
+        known_tickets = {
+            int(att.mt5_ticket)
+            for att in session.query(TradeAttempt).filter(
+                TradeAttempt.mt5_ticket.isnot(None),
+                TradeAttempt.mt5_ticket > 0,
+            ).all()
+        }
+
+        for order in mt5_orders:
+            ticket = int(getattr(order, "ticket", 0) or 0)
+            if not ticket or ticket in known_tickets:
+                continue
+
+            match = self._match_orphan_order_to_attempt(session, order)
+            if match is None:
+                logger.warning(
+                    f"Untracked MT5 pending order {ticket} on "
+                    f"{getattr(order, 'symbol', '?')} — no DB match; cancelling"
+                )
+                await self.bridge.cancel_pending_order(ticket)
+                continue
+
+            idea, attempt = match
+            attempt.mt5_ticket = ticket
+            attempt.execution_state = ExecutionState.SUBMITTED.value
+            idea.state = TradeState.PENDING_ORDER_PLACED.value
+            self._log_event(session, idea.id, "ORPHAN_ORDER_RECOVERED", {
+                "ticket": ticket,
+                "symbol": idea.symbol,
+                "entry": attempt.entry_price,
+                "volume": attempt.volume,
+            })
+            idea.version += 1
+            known_tickets.add(ticket)
+            logger.info(
+                f"Recovered orphan MT5 order {ticket} → idea {idea.id} "
+                f"attempt #{attempt.attempt_number}"
+            )
+        session.flush()
+
     async def _reconcile_positions_on_startup(self):
         """Reconcile DB open positions with MT5 on startup."""
         if self.bridge.connection_state != ConnectionState.ACTIVE:
             return
-            
-        mt5_positions = await self.bridge.get_positions()
-        mt5_tickets = {p.ticket: p for p in mt5_positions} if mt5_positions else {}
-        
+
         with self.SessionLocal() as session:
+            await self._reconcile_orphan_orders_on_startup(session)
+
+            mt5_positions = await self.bridge.get_positions()
+            mt5_tickets = {p.ticket: p for p in mt5_positions} if mt5_positions else {}
+
             db_positions = session.query(OpenPosition).all()
             for db_pos in db_positions:
                 if db_pos.mt5_ticket not in mt5_tickets:
-                    logger.warning(f"Position {db_pos.mt5_ticket} missing in MT5. Marking closed.")
-                    idea = session.query(TradeIdea).get(db_pos.trade_idea_id)
+                    logger.warning(
+                        f"Position {db_pos.mt5_ticket} missing in MT5. "
+                        f"Resolving close from deal history."
+                    )
+                    idea = session.get(TradeIdea, db_pos.trade_idea_id)
                     attempt = session.query(TradeAttempt).filter_by(
-                        trade_idea_id=idea.id, execution_state=ExecutionState.FILLED.value
+                        trade_idea_id=idea.id,
+                        execution_state=ExecutionState.FILLED.value,
                     ).order_by(TradeAttempt.id.desc()).first()
-                    
-                    if attempt:
-                        attempt.exit_price = attempt.entry_price
-                        attempt.pnl = 0.0
-                        attempt.exit_reason = "RECONCILIATION_MISSING"
-                        attempt.closed_at = utcnow()
-                        attempt.execution_state = ExecutionState.CANCELLED.value
-                        
-                    if idea and idea.state == TradeState.TRADE_OPEN.value:
-                        idea.state = TradeState.IDEA_INVALIDATED.value
-                        self._log_event(session, idea.id, "RECONCILIATION_INVALIDATED")
-                        idea.version += 1
-                        
-                    session.delete(db_pos)
-            
-            # Catch stuck ideas from crash
-            stuck_ideas = session.query(TradeIdea).filter_by(state="SUBMITTING_ORDER").all()
+
+                    if idea and attempt:
+                        contract = SymbolContract.for_symbol(db_pos.symbol)
+                        chop_sl = self.config.chop_exit_price(
+                            db_pos.symbol, attempt.entry_price, idea.direction
+                        )
+                        close_details = await self.bridge.get_position_close_details(
+                            db_pos.mt5_ticket
+                        )
+                        if close_details is not None:
+                            close_price = close_details.close_price
+                            broker_pnl = close_details.net_profit
+                        else:
+                            close_price = await self.bridge.get_position_close_price(
+                                db_pos.mt5_ticket
+                            )
+                            broker_pnl = None
+                            if close_price is None:
+                                close_price = attempt.entry_price
+                                logger.warning(
+                                    f"No deal history for position {db_pos.mt5_ticket}; "
+                                    f"using entry price as close"
+                                )
+
+                        await self._handle_trade_closed(
+                            session, idea, attempt, db_pos, db_pos.symbol,
+                            close_price, chop_sl, exit_reason="MT5_STOP",
+                            contract=contract,
+                            hard_stop_at_close=db_pos.current_stop or idea.hard_stop,
+                            pnl_dollars=broker_pnl,
+                        )
+                        self._log_event(session, idea.id, "RECONCILIATION_CLOSED", {
+                            "ticket": db_pos.mt5_ticket,
+                            "close_price": close_price,
+                            "pnl": broker_pnl,
+                        })
+                    else:
+                        session.delete(db_pos)
+
+            # Recover ideas stuck mid-submit from a crash
+            stuck_ideas = session.query(TradeIdea).filter_by(
+                state=TradeState.SUBMITTING_ORDER.value,
+            ).all()
             for idea in stuck_ideas:
-                logger.warning(f"Idea {idea.id} stuck in SUBMITTING_ORDER from previous crash. Invalidating.")
-                idea.state = TradeState.IDEA_INVALIDATED.value
-                self._log_event(session, idea.id, "CRASH_INVALIDATED")
+                logger.warning(
+                    f"Idea {idea.id} stuck in SUBMITTING_ORDER — cancelling inflight attempts"
+                )
+                submitted = session.query(TradeAttempt).filter_by(
+                    trade_idea_id=idea.id,
+                    execution_state=ExecutionState.SUBMITTED.value,
+                ).all()
+                for att in submitted:
+                    if att.mt5_ticket:
+                        cancel_res = await self._cancel_pending_order_as_bot(att.mt5_ticket)
+                        if cancel_res is None:
+                            logger.warning(
+                                f"Crash recovery: could not cancel MT5 order "
+                                f"{att.mt5_ticket} for idea {idea.id} — leaving SUBMITTED"
+                            )
+                            continue
+                    att.execution_state = ExecutionState.CANCELLED.value
+                    att.exit_reason = "CRASH_RECOVERY"
+                pending = session.query(TradeAttempt).filter_by(
+                    trade_idea_id=idea.id,
+                    execution_state=ExecutionState.PENDING.value,
+                ).all()
+                still_submitted = session.query(TradeAttempt).filter_by(
+                    trade_idea_id=idea.id,
+                    execution_state=ExecutionState.SUBMITTED.value,
+                ).count()
+                if still_submitted > 0:
+                    idea.state = TradeState.PENDING_ORDER_PLACED.value
+                else:
+                    for att in pending:
+                        session.delete(att)
+                    idea.state = self._pre_entry_waiting_state(idea)
+                self._log_event(session, idea.id, "CRASH_RECOVERED")
                 idea.version += 1
                 
             session.commit()
@@ -883,9 +1145,10 @@ class TradeManager:
                     active_ideas = session.query(TradeIdea).filter(
                         TradeIdea.state.in_([
                             TradeState.WAITING_FOR_SETUP.value,
+                            TradeState.SUBMITTING_ORDER.value,
                             TradeState.PENDING_ORDER_PLACED.value,
                             TradeState.TRADE_OPEN.value,
-                            TradeState.WAITING_FOR_REENTRY.value
+                            TradeState.WAITING_FOR_REENTRY.value,
                         ])
                     ).all()
                     
@@ -921,23 +1184,22 @@ class TradeManager:
 
     async def order_executor_loop(self):
         while self.running:
+            req: ExecutionRequest | None = None
             try:
-                req: ExecutionRequest = await self.execution_queue.get()
-                
+                req = await self.execution_queue.get()
+
                 if self.liquidity_filter.is_rollover_period():
                     logger.warning(f"OrderExecutor: Holding execution for {req.symbol} due to Rollover trap.")
                     await asyncio.sleep(1.0)
                     await self.execution_queue.put(req)
-                    self.execution_queue.task_done()
                     continue
-                
+
                 logger.info(f"Executing pending order for {req.symbol}")
                 live_tick = await self.bridge.get_tick(req.symbol)
                 if live_tick is None:
                     logger.error(f"No tick for {req.symbol}; re-queuing order")
                     await asyncio.sleep(0.5)
                     await self.execution_queue.put(req)
-                    self.execution_queue.task_done()
                     continue
                 live_bid = getattr(live_tick, "bid", 0.0)
                 live_ask = getattr(live_tick, "ask", 0.0)
@@ -948,9 +1210,18 @@ class TradeManager:
                     entry_price=req.price, bid=live_bid, ask=live_ask,
                     sl=req.sl, tp=req.tp, tick_size=tick_size,
                 )
-                
+
+                order_ticket = 0
+                if result and result.retcode == 10009:
+                    order_ticket = int(getattr(result, "order", 0) or 0)
+
                 with self.SessionLocal() as session:
-                    idea = session.query(TradeIdea).get(req.idea_id)
+                    idea = session.get(TradeIdea, req.idea_id)
+                    if idea is None:
+                        logger.error(f"[{req.symbol}] Idea {req.idea_id} not found for execution")
+                        if order_ticket:
+                            await self._cancel_pending_order_as_bot(order_ticket)
+                        continue
                     attempt = session.query(TradeAttempt).filter_by(
                         trade_idea_id=idea.id,
                         execution_state=ExecutionState.PENDING.value,
@@ -964,17 +1235,24 @@ class TradeManager:
                             f"[{req.symbol}] No PENDING attempt for idea {idea.id} "
                             f"(attempt_number={req.attempt_number})"
                         )
+                        if order_ticket:
+                            logger.warning(
+                                f"[{req.symbol}] Cancelling orphan MT5 order {order_ticket} "
+                                f"(no DB attempt for idea {idea.id})"
+                            )
+                            await self._cancel_pending_order_as_bot(order_ticket)
                         idea.state = self._pre_entry_waiting_state(idea)
                         idea.version += 1
                         session.commit()
-                        self.execution_queue.task_done()
                         continue
 
-                    if result and result.retcode == 10009: # TRADE_RETCODE_DONE
+                    if order_ticket:
                         attempt.execution_state = ExecutionState.SUBMITTED.value
-                        attempt.mt5_ticket = getattr(result, 'order', 0)
-                        
+                        attempt.mt5_ticket = order_ticket
                         idea.state = TradeState.PENDING_ORDER_PLACED.value
+                        idea.version += 1
+                        session.commit()
+
                         entry_plan = self.bridge.plan_pending_entry(
                             req.direction, req.price, live_bid, live_ask,
                             tick_size=tick_size,
@@ -985,6 +1263,8 @@ class TradeManager:
                             "chop_sl": req.sl,
                             "order_kind": entry_plan.kind.value,
                         })
+                        idea.version += 1
+                        session.commit()
                     else:
                         retcode = getattr(result, "retcode", None) if result else None
                         comment = getattr(result, "comment", "") if result else ""
@@ -1022,14 +1302,14 @@ class TradeManager:
                                 f"[{req.symbol}] Idea {idea.id} entry rejected: "
                                 f"retcode={retcode} {comment}"
                             )
-                    
+
                     idea.version += 1
                     session.commit()
 
                 # If the pending order fills immediately, ensure chop SL is on the position
-                if result and result.retcode == 10009:
-                    order_ticket = getattr(result, 'order', 0)
+                if order_ticket:
                     chop_sl = req.sl
+                    immediate_pos_ticket = None
                     for _ in range(20):
                         positions = await self.bridge.get_positions(req.symbol)
                         pos_ticket = self._resolve_position_ticket(
@@ -1038,6 +1318,7 @@ class TradeManager:
                             entry_price=req.price,
                         )
                         if pos_ticket is not None:
+                            immediate_pos_ticket = pos_ticket
                             fill_contract = SymbolContract.for_symbol(req.symbol)
                             ok = await self._ensure_chop_stop_on_position(
                                 req.symbol, pos_ticket, chop_sl, req.tp, fill_contract
@@ -1054,12 +1335,31 @@ class TradeManager:
                                 )
                             break
                         await asyncio.sleep(0.05)
-                
-                self.execution_queue.task_done()
+
+                    if immediate_pos_ticket is not None:
+                        spec = await self.bridge.get_symbol_spec(req.symbol)
+                        fill_contract = (
+                            SymbolContract.from_mt5_spec(req.symbol, spec)
+                            if spec else SymbolContract.for_symbol(req.symbol)
+                        )
+                        with self.SessionLocal() as session:
+                            idea = session.get(TradeIdea, req.idea_id)
+                            attempt = session.query(TradeAttempt).filter_by(
+                                trade_idea_id=req.idea_id,
+                                execution_state=ExecutionState.SUBMITTED.value,
+                            ).order_by(TradeAttempt.id.desc()).first()
+                            if idea and attempt:
+                                await self._register_trade_open(
+                                    session, idea, attempt, req.symbol,
+                                    immediate_pos_ticket, fill_contract,
+                                )
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Execution loop error: {e}")
+                logger.error(f"Execution loop error: {e}", exc_info=True)
+            finally:
+                if req is not None:
+                    self.execution_queue.task_done()
 
     async def symbol_worker(self, symbol: str):
         logger.info(f"Worker active for {symbol}")
@@ -1088,7 +1388,7 @@ class TradeManager:
                             TradeState.PENDING_ORDER_PLACED.value,
                             TradeState.WAITING_FOR_REENTRY.value,
                             TradeState.TRADE_OPEN.value,
-                            "SUBMITTING_ORDER",
+                            TradeState.SUBMITTING_ORDER.value,
                         ])
                     ).all()
                     
@@ -1159,10 +1459,53 @@ class TradeManager:
                             if not self.session_manager.is_in_prime_session(symbol):
                                 continue # Wait for prime session to place the order
 
-                            account_info = await self.bridge.get_account_info()
-                            account_equity = getattr(account_info, 'equity', None)
-                            
+                            tick = await self.bridge.get_tick(symbol)
+                            if tick is None:
+                                continue
+                            market = MarketTick.from_mt5(tick)
+                            if not market.is_valid():
+                                continue
+
+                            if idea.state == TradeState.WAITING_FOR_SETUP.value:
+                                if not ready_for_initial_entry_placement(
+                                    idea.direction,
+                                    idea.original_entry,
+                                    market.bid,
+                                    market.ask,
+                                    idea.entry_zone_low,
+                                    idea.entry_zone_high,
+                                    contract.tick_size,
+                                ):
+                                    if idea.id not in self._entry_zone_defer_logged:
+                                        self._entry_zone_defer_logged.add(idea.id)
+                                        self._log_event(session, idea.id, "PENDING_DEFERRED", {
+                                            "reason": "entry_zone_or_immediate_fill",
+                                            "entry": idea.original_entry,
+                                            "bid": market.bid,
+                                            "ask": market.ask,
+                                            "zone_low": idea.entry_zone_low,
+                                            "zone_high": idea.entry_zone_high,
+                                        })
+                                        idea.version += 1
+                                        session.commit()
+                                        logger.info(
+                                            f"[{symbol}] Idea {idea.id} waiting for entry zone "
+                                            f"or restable price @ {idea.original_entry} "
+                                            f"(bid={market.bid}, ask={market.ask})"
+                                        )
+                                    continue
+
                             remaining_risk = idea.max_idea_risk - idea.consumed_risk
+                            if remaining_risk <= 0:
+                                logger.warning(
+                                    f"[{symbol}] Idea {idea.id} has no remaining risk budget "
+                                    f"(consumed={idea.consumed_risk:.2f}, max={idea.max_idea_risk:.2f})"
+                                )
+                                continue
+
+                            account_info = await self.bridge.get_account_info()
+
+                            account_equity = getattr(account_info, 'equity', None)
 
                             if not self.risk_manager.can_accept_idea(
                                 session, symbol, idea.direction, idea.original_hard_stop,
@@ -1175,13 +1518,6 @@ class TradeManager:
                                 )
                                 continue
 
-                            tick = await self.bridge.get_tick(symbol)
-                            if tick is None:
-                                continue
-                            market = MarketTick.from_mt5(tick)
-                            if not market.is_valid():
-                                continue
-                            
                             volume, volume_source = PositionSizingEngine.resolve_volume(
                                 contract,
                                 remaining_risk,
@@ -1190,8 +1526,6 @@ class TradeManager:
                                 predefined_lot=idea.lot_size,
                                 max_lot_size=PositionSizingEngine.max_lot_size_from_env(),
                             )
-                            if idea.lot_size is None:
-                                idea.lot_size = volume
                             logger.info(
                                 f"[{symbol}] Idea {idea.id} volume {volume} "
                                 f"({volume_source}, remaining_risk={remaining_risk:.2f})"
@@ -1244,7 +1578,12 @@ class TradeManager:
                                 volume=volume
                             )
                             session.add(attempt)
-                            
+
+                            self._entry_zone_defer_logged.discard(idea.id)
+                            idea.state = TradeState.SUBMITTING_ORDER.value
+                            idea.version += 1
+                            session.commit()
+
                             req = ExecutionRequest(
                                 idea_id=idea.id, symbol=idea.symbol, direction=idea.direction,
                                 volume=volume, price=idea.original_entry,
@@ -1254,10 +1593,20 @@ class TradeManager:
                                 bid=market.bid, ask=market.ask,
                             )
                             await self.execution_queue.put(req)
-                            
-                            idea.state = "SUBMITTING_ORDER" # Temporary state so worker ignores it until executor acts
-                            idea.version += 1
-                            session.commit()
+                            continue
+
+                        elif idea.state == TradeState.SUBMITTING_ORDER.value:
+                            inflight = session.query(TradeAttempt).filter(
+                                TradeAttempt.trade_idea_id == idea.id,
+                                TradeAttempt.execution_state.in_([
+                                    ExecutionState.PENDING.value,
+                                    ExecutionState.SUBMITTED.value,
+                                ]),
+                            ).first()
+                            if not inflight:
+                                idea.state = self._pre_entry_waiting_state(idea)
+                                idea.version += 1
+                                session.commit()
                             continue
 
                         elif idea.state == TradeState.PENDING_ORDER_PLACED.value:
@@ -1288,7 +1637,12 @@ class TradeManager:
 
                             # Resolve fill / close / cancel before limit↔stop maintenance
                             outcome = None
-                            for _ in range(60):
+                            force_resolve = symbol in self._ea_force_resolve_symbols
+                            if force_resolve:
+                                self._ea_force_resolve_symbols.discard(symbol)
+                            max_iters = 5 if force_resolve else 60
+                            poll_sleep = 0.02 if force_resolve else 0.1
+                            for _ in range(max_iters):
                                 outcome = await self.bridge.resolve_pending_order_outcome(
                                     symbol=symbol,
                                     order_ticket=attempt.mt5_ticket,
@@ -1299,7 +1653,7 @@ class TradeManager:
                                 )
                                 if outcome.status != "missing":
                                     break
-                                await asyncio.sleep(0.1)
+                                await asyncio.sleep(poll_sleep)
 
                             if outcome and outcome.status != "pending":
                                 if await self._handle_pending_order_outcome(
@@ -1330,7 +1684,7 @@ class TradeManager:
                                     break
 
                             if stale_type:
-                                cancel_res = await self.bridge.cancel_pending_order(
+                                cancel_res = await self._cancel_pending_order_as_bot(
                                     attempt.mt5_ticket
                                 )
                                 if cancel_res is None:
@@ -1355,22 +1709,9 @@ class TradeManager:
                                         retry_outcome, pending_contract,
                                     ):
                                         continue
-                                else:
-                                    await self._requeue_pre_entry(
-                                        session, idea, attempt, "ORDER_TYPE_STALE",
-                                        "ORDER_TYPE_STALE",
-                                        {
-                                            "ticket": attempt.mt5_ticket,
-                                            "expected_type": expected_type,
-                                            "order_kind": expected_plan.kind.value,
-                                            "price_side": entry_market_side(
-                                                idea.direction, idea.original_entry,
-                                                live_bid, live_ask, pending_contract.tick_size,
-                                            ),
-                                            "had_type": getattr(current_order, 'type', None),
-                                            "bid": live_bid,
-                                            "ask": live_ask,
-                                        },
+                                    logger.warning(
+                                        f"[{symbol}] Cancel failed for pending "
+                                        f"{attempt.mt5_ticket} — keeping SUBMITTED, will retry"
                                     )
                                     continue
                                 await self._requeue_pre_entry(
@@ -1387,7 +1728,6 @@ class TradeManager:
                                         "had_type": getattr(current_order, 'type', None),
                                         "bid": live_bid,
                                         "ask": live_ask,
-                                        "note": "cancel_failed_requeue",
                                     },
                                 )
                                 continue
@@ -1469,7 +1809,14 @@ class TradeManager:
                                     ticket=open_pos.mt5_ticket, symbol=symbol,
                                     direction=idea.direction, volume=open_pos.volume
                                 )
-                                close_price = getattr(close_res, 'price', mark_price) if close_res else mark_price
+                                if close_res is None:
+                                    logger.error(
+                                        f"[{symbol}] Failed to close position "
+                                        f"{open_pos.mt5_ticket} for idea {idea.id} — will retry"
+                                    )
+                                    continue
+
+                                close_price = getattr(close_res, 'price', mark_price)
 
                                 if time_hit:
                                     exit_reason = "MAX_HOLD_EXCEEDED"
@@ -1522,13 +1869,29 @@ class TradeManager:
                 logger.error(f"{symbol} Worker error: {e}", exc_info=True)
                 await asyncio.sleep(5.0)
                 continue
-                
-            await asyncio.sleep(0.1)
+
+            with self.SessionLocal() as _sleep_session:
+                sleep_ideas = _sleep_session.query(TradeIdea).filter(
+                    TradeIdea.symbol == symbol,
+                    TradeIdea.state.in_([
+                        TradeState.WAITING_FOR_SETUP.value,
+                        TradeState.PENDING_ORDER_PLACED.value,
+                        TradeState.WAITING_FOR_REENTRY.value,
+                        TradeState.TRADE_OPEN.value,
+                        TradeState.SUBMITTING_ORDER.value,
+                    ]),
+                ).all()
+            await asyncio.sleep(self._worker_sleep_sec(symbol, sleep_ideas))
 
 if __name__ == "__main__":
-    manager = TradeManager()
+    async def _run():
+        manager = TradeManager()
+        try:
+            await manager.start()
+        finally:
+            await manager.stop()
+
     try:
-        asyncio.run(manager.start())
+        asyncio.run(_run())
     except KeyboardInterrupt:
-        logger.info("Interrupted by user. Shutting down...")
-        asyncio.run(manager.stop())
+        logger.info("Interrupted by user.")

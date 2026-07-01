@@ -24,6 +24,8 @@ class PendingOrderOutcome:
     position_ticket: int | None = None
     fill_price: float | None = None
     close_price: float | None = None
+    order_comment: str | None = None
+    order_magic: int | None = None
 
 
 def _deal_entry_flag(deal: Any) -> int | None:
@@ -74,7 +76,11 @@ def resolve_pending_order_outcome(
     if history_order is not None:
         state = int(getattr(history_order, "state", -1))
         if state == ORDER_STATE_CANCELED:
-            return PendingOrderOutcome(status="cancelled")
+            return PendingOrderOutcome(
+                status="cancelled",
+                order_comment=str(getattr(history_order, "comment", "") or ""),
+                order_magic=int(getattr(history_order, "magic", 0) or 0),
+            )
         if state == ORDER_STATE_FILLED:
             outcome = _outcome_from_deals(
                 order_deals, direction, entry_price, tick_size, positions=ours

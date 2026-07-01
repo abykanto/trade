@@ -10,11 +10,11 @@ env/
 ENV/
 
 # Local database (runtime state)
+*.sqlite
 *.sqlite3
 *.db
 *.db-shm
 *.db-wal
-trade_ideas.db
 
 # Logs and process/runtime dirs
 *.log
@@ -22,17 +22,24 @@ logs/
 run/
 *.pid
 
-# Price validation logs (runtime)
-data/price_logs/
+# Runtime market data (tick parquet, etc.)
+data/
+*.parquet
 
-# Environment / secrets
+# Environment / secrets (keep .env.example as the committed template)
 .env
 .env.*
+!.env.example
 
-# IDEs
+# MQL5 / MetaTrader build artifacts
+*.ex5
+*.ex4
+
+# IDEs and editors
 .idea/
 .vscode/
 *.swp
+*~
 
 # Testing / coverage
 .pytest_cache/
@@ -40,12 +47,23 @@ htmlcov/
 .coverage
 .mypy_cache/
 .ruff_cache/
+.tox/
+.nox/
 
-# Build artifacts
+# Build / packaging
 dist/
 build/
 *.egg-info/
+*.egg
+
+# Docker local overrides (not docker-compose.yml)
+docker-compose.override.yml
+docker-compose.*.local.yml
 
 # OS
 .DS_Store
 Thumbs.db
+
+# Scratch / editor leftovers
+Untitled*.py
+Untitled-*

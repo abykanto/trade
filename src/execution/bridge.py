@@ -7,6 +7,7 @@ from typing import Optional, Any
 
 from src.market import MarketTick, SymbolContract, position_stop_matches
 from src.market.order_outcome import PendingOrderOutcome, resolve_pending_order_outcome
+from src.market.deal_history import PositionCloseDetails, close_details_from_deals
 from src.market.pending_entry import (
     PendingOrderKind,
     fill_price_violates_entry,
@@ -29,10 +30,10 @@ class MT5Bridge:
     to avoid freezing the asyncio event loop.
     """
 
-    def __init__(self, host="localhost", port=18812, magic=234000,
-                 deviation=20, max_retries=3):
-        self.host = host
-        self.port = port
+    def __init__(self, host: str | None = None, port: int | None = None,
+                 magic=234000, deviation=20, max_retries=3):
+        self.host = host or os.environ.get("MT5_HOST", "localhost")
+        self.port = port if port is not None else int(os.environ.get("MT5_PORT", "18812"))
         self.magic = magic
         self.deviation = deviation
         self.max_order_retries = max_retries
@@ -417,8 +418,10 @@ class MT5Bridge:
         contract = SymbolContract(symbol=symbol, tick_size=tick_size, tick_value=tick_value)
         return position_stop_matches(position, sl, contract)
 
-    def _sync_get_position_close_price(self, position_ticket: int) -> Optional[float]:
-        """Return the broker fill price for the most recent close deal on a position."""
+    def _sync_get_position_close_details(
+        self, position_ticket: int
+    ) -> Optional[PositionCloseDetails]:
+        """Return broker close price and PnL from deal history."""
         mt5 = self._get_mt5()
         if mt5 is None:
             return None
@@ -426,20 +429,27 @@ class MT5Bridge:
             deals = mt5.history_deals_get(position=position_ticket)
             if not deals:
                 return None
-            exit_deals = [
-                d for d in deals
-                if getattr(d, 'entry', None) == mt5.DEAL_ENTRY_OUT
-                or getattr(d, 'entry', None) == 1  # DEAL_ENTRY_OUT fallback
-            ]
-            if not exit_deals:
-                exit_deals = list(deals)
-            last = max(exit_deals, key=lambda d: getattr(d, 'time', 0))
-            price = getattr(last, 'price', None)
-            if price:
+            details = close_details_from_deals(list(deals))
+            if details is not None:
                 self._mark_success()
-            return price
+            return details
         except Exception as e:
-            logger.error(f"get_position_close_price error: {e}")
+            logger.error(f"get_position_close_details error: {e}")
+        return None
+
+    async def get_position_close_details(
+        self, position_ticket: int
+    ) -> Optional[PositionCloseDetails]:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None, self._sync_get_position_close_details, position_ticket
+        )
+
+    def _sync_get_position_close_price(self, position_ticket: int) -> Optional[float]:
+        """Return the broker fill price for the most recent close deal on a position."""
+        details = self._sync_get_position_close_details(position_ticket)
+        if details is not None:
+            return details.close_price
         return None
 
     async def get_position_close_price(self, position_ticket: int) -> Optional[float]:

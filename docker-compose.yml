@@ -1,0 +1,27 @@
+# Trade Manager — Python brain + API. MT5 terminal stays on the host; attach
+# TradeIdeaExecutor EA and point InpPythonHost at this machine (localhost or
+# host IP). Published port 19520 accepts the EA TCP connection.
+services:
+  trade:
+    build: .
+    container_name: trade-manager
+    ports:
+      - "${API_PORT:-8001}:8001"
+      - "${EA_SERVER_PORT:-19520}:19520"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PYTHONPATH: /app
+      EXECUTION_BACKEND: ${EXECUTION_BACKEND:-ea}
+      EA_SERVER_HOST: 0.0.0.0
+      EA_SERVER_PORT: 19520
+      API_PORT: 8001
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////app/data/trade_ideas.db}
+    volumes:
+      - trade-data:/app/data
+      - ./logs:/app/logs
+    restart: unless-stopped
+
+volumes:
+  trade-data:

@@ -9,6 +9,7 @@ from src.market.pending_entry import (
     fill_price_violates_entry,
     pending_would_fill_immediately,
     plan_pending_entry,
+    ready_for_initial_entry_placement,
     select_pending_order_kind,
 )
 
@@ -70,3 +71,16 @@ def test_entry_inside_spread_defers():
     assert entry_inside_spread(1.1482, 1.1481, 1.1483, tick_size=0.00001)
     kind = select_pending_order_kind("BUY", 1.1482, 1.1481, 1.1483, tick_size=0.00001)
     assert pending_would_fill_immediately(kind, 1.1482, 1.1481, 1.1483, tick_size=0.00001)
+
+
+def test_ready_for_initial_entry_inside_spread_blocks():
+    # Entry inside spread cannot rest at exact price; mid outside zone.
+    assert not ready_for_initial_entry_placement(
+        "BUY", 4239.45, 4239.4, 4239.5, 4220.0, 4225.0, tick_size=0.01,
+    )
+
+
+def test_ready_for_initial_entry_allows_resting_limit_below():
+    assert ready_for_initial_entry_placement(
+        "BUY", 4240.0, 4235.0, 4235.2, 4239.0, 4241.0, tick_size=0.01,
+    )

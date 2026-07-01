@@ -29,30 +29,36 @@ class PortfolioRiskManager:
             )
             return False
 
-        # --- 5-LOSS CIRCUIT BREAKER ---
-        # Fetch the last 5 finalized ideas (TP, SL, or Invalidated with realized pnl)
-        last_five_completed = db.query(TradeIdea).filter(
+        # --- 5-LOSS CIRCUIT BREAKER (truly consecutive from most recent) ---
+        recent_completed = db.query(TradeIdea).filter(
             TradeIdea.state.in_([
                 TradeState.TP_REACHED.value,
-                TradeState.IDEA_INVALIDATED.value
+                TradeState.IDEA_INVALIDATED.value,
             ])
-        ).order_by(TradeIdea.updated_at.desc()).limit(5).all()
+        ).order_by(TradeIdea.updated_at.desc()).limit(20).all()
 
-        if len(last_five_completed) == 5:
-            # Check if all 5 resulted in a loss (realized_pnl < 0)
-            all_losses = all(idea.realized_pnl < 0 for idea in last_five_completed)
-            if all_losses:
-                logger.error("PortfolioRiskManager: SYSTEM HALTED. 5 consecutive losses detected. Manual review required.")
-                return False
+        consecutive_losses = 0
+        for idea in recent_completed:
+            if idea.realized_pnl < 0:
+                consecutive_losses += 1
+            else:
+                break
+        if consecutive_losses >= 5:
+            logger.error(
+                "PortfolioRiskManager: SYSTEM HALTED. "
+                f"{consecutive_losses} consecutive losses detected. Manual review required."
+            )
+            return False
 
         # --- MAX ACTIVE LIMITS ---
         active_symbol_q = db.query(TradeIdea).filter(
             TradeIdea.symbol == symbol,
             TradeIdea.state.in_([
                 TradeState.WAITING_FOR_SETUP.value,
+                TradeState.SUBMITTING_ORDER.value,
                 TradeState.PENDING_ORDER_PLACED.value,
                 TradeState.TRADE_OPEN.value,
-                TradeState.WAITING_FOR_REENTRY.value
+                TradeState.WAITING_FOR_REENTRY.value,
             ])
         )
         if exclude_idea_id is not None:
@@ -63,14 +69,18 @@ class PortfolioRiskManager:
             logger.warning(f"PortfolioRiskManager: Rejected {symbol}. One active idea per symbol allowed.")
             return False
 
-        total_active = db.query(TradeIdea).filter(
+        total_active_q = db.query(TradeIdea).filter(
             TradeIdea.state.in_([
                 TradeState.WAITING_FOR_SETUP.value,
+                TradeState.SUBMITTING_ORDER.value,
                 TradeState.PENDING_ORDER_PLACED.value,
                 TradeState.TRADE_OPEN.value,
-                TradeState.WAITING_FOR_REENTRY.value
+                TradeState.WAITING_FOR_REENTRY.value,
             ])
-        ).count()
+        )
+        if exclude_idea_id is not None:
+            total_active_q = total_active_q.filter(TradeIdea.id != exclude_idea_id)
+        total_active = total_active_q.count()
         
         if total_active >= self.max_active_ideas:
             logger.warning(f"PortfolioRiskManager: Rejected {symbol}. Max active ideas reached ({self.max_active_ideas}).")
@@ -83,8 +93,6 @@ class PortfolioRiskManager:
             TradeIdea.updated_at >= today,
             TradeIdea.realized_pnl < 0
         )
-        if exclude_idea_id is not None:
-            total_loss_today_q = total_loss_today_q.filter(TradeIdea.id != exclude_idea_id)
         total_loss_today = total_loss_today_q.scalar() or 0.0
         
         if account_equity is not None and account_equity > 0:
@@ -93,19 +101,23 @@ class PortfolioRiskManager:
                 logger.warning(f"PortfolioRiskManager: Daily Drawdown Halt! ({abs(total_loss_today)} >= {daily_loss_limit:.2f}). No new ideas accepted.")
                 return False
                 
-            # Account risk check
-            active_risk_q = db.query(func.sum(TradeIdea.max_idea_risk)).filter(
+            # Account risk check — use remaining budget per idea, not full max_idea_risk
+            active_ideas = db.query(TradeIdea).filter(
                 TradeIdea.state.in_([
                     TradeState.WAITING_FOR_SETUP.value,
+                    TradeState.SUBMITTING_ORDER.value,
                     TradeState.PENDING_ORDER_PLACED.value,
                     TradeState.TRADE_OPEN.value,
-                    TradeState.WAITING_FOR_REENTRY.value
+                    TradeState.WAITING_FOR_REENTRY.value,
                 ])
             )
             if exclude_idea_id is not None:
-                active_risk_q = active_risk_q.filter(TradeIdea.id != exclude_idea_id)
-            active_risk = active_risk_q.scalar() or 0.0
-            
+                active_ideas = active_ideas.filter(TradeIdea.id != exclude_idea_id)
+            active_risk = sum(
+                max(0.0, idea.max_idea_risk - idea.consumed_risk)
+                for idea in active_ideas.all()
+            )
+
             total_proposed_risk = active_risk + max_idea_risk
             risk_percent = (total_proposed_risk / account_equity) * 100
             
@@ -139,8 +151,10 @@ class PositionSizingEngine:
     ) -> tuple[float, str]:
         """Pick entry volume: predefined idea/signal lot, else risk-based (capped)."""
         if predefined_lot is not None and predefined_lot > 0:
+            risk_cap = contract.lot_size_for_risk(risk_amount, entry, stop)
+            volume = min(predefined_lot, risk_cap)
             return (
-                PositionSizingEngine._clamp_lot(predefined_lot, contract),
+                PositionSizingEngine._clamp_lot(volume, contract),
                 "predefined",
             )
         volume = contract.lot_size_for_risk(risk_amount, entry, stop)

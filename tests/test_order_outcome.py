@@ -72,10 +72,16 @@ def test_cancelled_order_detected():
         magic=234000,
         orders=[],
         positions=[],
-        history_order=SimpleNamespace(state=ORDER_STATE_CANCELED),
+        history_order=SimpleNamespace(
+            state=ORDER_STATE_CANCELED,
+            comment="TradeIdeaBot_Pending",
+            magic=234000,
+        ),
         order_deals=None,
     )
     assert outcome.status == "cancelled"
+    assert outcome.order_comment == "TradeIdeaBot_Pending"
+    assert outcome.order_magic == 234000
 
 
 def test_filled_and_closed_from_deals():

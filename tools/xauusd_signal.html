@@ -187,12 +187,159 @@
     .rr-custom button { padding: 0.4rem 0.65rem; border-radius: 6px; border: 1px solid var(--border); background: #0d1219; color: var(--text); cursor: pointer; font-size: 0.82rem; }
     .pill.ratio.rec { border-color: #5a8fd4; color: #8ab4f0; }
     .pill.ratio.rec.active { border-color: #8ab4f0; background: rgba(138,180,240,0.12); color: #8ab4f0; }
+    .panel-stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 0.65rem;
+      margin-bottom: 1rem;
+    }
+    .stat {
+      background: #080c11;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.65rem 0.75rem;
+    }
+    .stat span { display: block; font-size: 0.68rem; text-transform: uppercase; color: var(--muted); letter-spacing: 0.04em; }
+    .stat strong { font-family: var(--mono); font-size: 1.15rem; color: var(--text); }
+    .stat strong.pos { color: var(--buy); }
+    .stat strong.neg { color: var(--sell); }
+    .ideas-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+    table.ideas {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.8rem;
+      font-family: var(--mono);
+    }
+    table.ideas th, table.ideas td {
+      padding: 0.55rem 0.65rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    table.ideas th {
+      color: var(--muted);
+      font-size: 0.68rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      background: #080c11;
+    }
+    table.ideas tr:last-child td { border-bottom: none; }
+    table.ideas tr:hover td { background: rgba(255,255,255,0.02); }
+    .badge {
+      display: inline-block;
+      padding: 0.15rem 0.45rem;
+      border-radius: 4px;
+      font-size: 0.68rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+    .badge.open { background: rgba(62,207,142,0.15); color: var(--buy); }
+    .badge.wait { background: rgba(232,184,74,0.12); color: var(--accent); }
+    .badge.pending { background: rgba(138,180,240,0.12); color: #8ab4f0; }
+    .badge.done { background: rgba(125,143,168,0.15); color: var(--muted); }
+    .badge.bad { background: rgba(240,113,120,0.12); color: var(--sell); }
+    .dir-buy { color: var(--buy); }
+    .dir-sell { color: var(--sell); }
+    .panel-toolbar { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.75rem; flex-wrap: wrap; }
+    .panel-toolbar button {
+      padding: 0.35rem 0.65rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #0d1219;
+      color: var(--text);
+      font-size: 0.82rem;
+      cursor: pointer;
+    }
+    .panel-toolbar button:hover { border-color: var(--accent); }
+    .submit-btn {
+      width: 100%;
+      padding: 0.85rem;
+      border: none;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--buy), #2a9d62);
+      color: #052a18;
+      font-weight: 800;
+      font-size: 1rem;
+      cursor: pointer;
+      margin-bottom: 0.5rem;
+    }
+    .submit-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+    .submit-btn:hover:not(:disabled) { filter: brightness(1.06); }
+    .submit-status { font-size: 0.82rem; color: var(--muted); min-height: 1.2rem; margin-bottom: 0.75rem; }
+    .submit-status.ok { color: var(--buy); }
+    .submit-status.err { color: var(--sell); }
+    .toast {
+      position: fixed;
+      bottom: 1.25rem;
+      right: 1.25rem;
+      max-width: min(420px, calc(100vw - 2rem));
+      padding: 0.75rem 1rem;
+      border-radius: 8px;
+      font-size: 0.88rem;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+      z-index: 1000;
+      opacity: 0;
+      transform: translateY(8px);
+      transition: opacity 0.2s, transform 0.2s;
+      pointer-events: none;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .toast.success { background: #0f2a1c; border: 1px solid var(--buy); color: var(--buy); }
+    .toast.error { background: #2a1214; border: 1px solid var(--sell); color: var(--sell); }
+    .action-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+    @media (max-width: 600px) { .action-row { grid-template-columns: 1fr; } }
+    .secondary-btn {
+      width: 100%;
+      padding: 0.65rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: #0d1219;
+      color: var(--text);
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .secondary-btn:hover { border-color: var(--accent); }
+    .empty-row td { color: var(--muted); text-align: center; padding: 1.25rem !important; }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>XAUUSD signal builder</h1>
-    <p class="sub">Drag each line independently, or use the move handle to shift all three. Chart refreshes from parquet every 10s.</p>
+    <h1>XAUUSD control panel</h1>
+    <p class="sub">Set levels on the chart, place orders into the trade manager, and monitor active ideas. Chart refreshes every 10s.</p>
+
+    <div class="card" id="panelCard">
+      <label>Trade manager</label>
+      <div class="panel-stats" id="panelStats">
+        <div class="stat"><span>Active</span><strong id="statActive">—</strong></div>
+        <div class="stat"><span>Open</span><strong id="statOpen" class="pos">—</strong></div>
+        <div class="stat"><span>Waiting</span><strong id="statWaiting">—</strong></div>
+        <div class="stat"><span>Done today</span><strong id="statDone">—</strong></div>
+        <div class="stat"><span>Active PnL</span><strong id="statPnl">—</strong></div>
+      </div>
+      <div class="panel-toolbar">
+        <button type="button" id="refreshIdeasBtn">Refresh ideas</button>
+        <span class="status" id="ideasStatus">Loading…</span>
+      </div>
+      <div class="ideas-table-wrap">
+        <table class="ideas">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Dir</th>
+              <th>Entry</th>
+              <th>SL</th>
+              <th>TP</th>
+              <th>Lot</th>
+              <th>State</th>
+              <th>PnL</th>
+              <th>Source</th>
+            </tr>
+          </thead>
+          <tbody id="ideasBody">
+            <tr class="empty-row"><td colspan="9">No active ideas</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
 
     <div class="card">
       <div class="chart-toolbar">
@@ -265,12 +412,21 @@
     </div>
 
     <div class="card">
+      <label>Place order</label>
+      <button type="button" class="submit-btn" id="submitBtn">Place order → trade manager</button>
+      <p class="submit-status" id="submitStatus"></p>
       <label>curl command</label>
       <pre id="curlOut"></pre>
-      <button type="button" class="copy-btn" id="copyBtn">Copy curl</button>
-      <p class="hint">Drag a coloured line to move only that level. Away from the lines, a move handle follows your cursor — drag it to shift entry, SL and TP together. Reset restores the original levels from page load.</p>
+      <div class="action-row">
+        <button type="button" class="secondary-btn" id="copyBtn">Copy curl</button>
+        <button type="button" class="secondary-btn" id="newSourceBtn">New source id</button>
+      </div>
+      <p class="hint">Drag a coloured line to move only that level. Away from the lines, a move handle follows your cursor — drag it to shift entry, SL and TP together. Each place order uses a unique <code>source</code> unless you lock it below.</p>
+      <label class="chk"><input type="checkbox" id="lockSource" /> Keep source id (may reject duplicate)</label>
     </div>
   </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <script>
     const $ = (id) => document.getElementById(id);
@@ -305,6 +461,7 @@
     const TAG_H = 32;
     const TAG_GAP = 3;
     const POLL_MS = 10000;
+    const IDEAS_POLL_MS = 5000;
     const CONSOL_BARS = 30;
 
     function round2(n) { return Math.round(n * 100) / 100; }
@@ -478,6 +635,136 @@
 
     function defaultSource() {
       return `xau_${state.direction.toLowerCase()}_${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}`;
+    }
+
+    function apiBase() {
+      const raw = $("apiUrl").value.trim();
+      if (raw) return raw.replace(/\/$/, "");
+      return window.location.origin;
+    }
+
+    function formatApiError(data) {
+      const d = data && data.detail;
+      if (!d) return "Request failed";
+      if (typeof d === "string") return d;
+      if (Array.isArray(d)) return d.map((e) => e.msg || JSON.stringify(e)).join("; ");
+      return JSON.stringify(d);
+    }
+
+    let toastTimer = null;
+    function showToast(message, kind = "success") {
+      const el = $("toast");
+      el.textContent = message;
+      el.className = `toast show ${kind}`;
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => el.classList.remove("show"), 4500);
+    }
+
+    function stateBadge(state) {
+      const s = String(state || "");
+      let cls = "wait";
+      if (s === "TRADE_OPEN") cls = "open";
+      else if (s.includes("PENDING") || s === "SUBMITTING_ORDER") cls = "pending";
+      else if (s.includes("INVALID") || s === "RISK_EXHAUSTED" || s === "IDEA_EXPIRED") cls = "bad";
+      else if (s === "TP_REACHED") cls = "done";
+      const label = s.replace(/_/g, " ").toLowerCase();
+      return `<span class="badge ${cls}">${label}</span>`;
+    }
+
+    function fmtPnl(v) {
+      const n = Number(v) || 0;
+      const cls = n >= 0 ? "pos" : "neg";
+      const sign = n >= 0 ? "+" : "";
+      return `<span class="${cls}">${sign}${n.toFixed(2)}</span>`;
+    }
+
+    function renderIdeasTable(ideas) {
+      const body = $("ideasBody");
+      if (!ideas || !ideas.length) {
+        body.innerHTML = '<tr class="empty-row"><td colspan="9">No active ideas</td></tr>';
+        return;
+      }
+      body.innerHTML = ideas.map((idea) => {
+        const dirCls = idea.direction === "BUY" ? "dir-buy" : "dir-sell";
+        const src = (idea.source || "").length > 22
+          ? `${idea.source.slice(0, 20)}…`
+          : (idea.source || "");
+        return `<tr>
+          <td>#${idea.id}</td>
+          <td class="${dirCls}">${idea.direction}</td>
+          <td>${Number(idea.original_entry).toFixed(2)}</td>
+          <td>${Number(idea.hard_stop).toFixed(2)}</td>
+          <td>${Number(idea.take_profit).toFixed(2)}</td>
+          <td>${idea.lot_size != null ? Number(idea.lot_size).toFixed(2) : "—"}</td>
+          <td>${stateBadge(idea.state)}</td>
+          <td>${fmtPnl(idea.realized_pnl)}</td>
+          <td title="${idea.source || ""}">${src}</td>
+        </tr>`;
+      }).join("");
+    }
+
+    async function fetchPanelSummary() {
+      try {
+        const res = await fetch(`${apiBase()}/panel/summary?_=${Date.now()}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        $("statActive").textContent = data.active_count;
+        $("statOpen").textContent = data.open_trades;
+        $("statWaiting").textContent = data.waiting_count;
+        $("statDone").textContent = data.completed_today;
+        const pnl = Number(data.total_realized_pnl) || 0;
+        const pnlEl = $("statPnl");
+        pnlEl.textContent = `${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}`;
+        pnlEl.className = pnl >= 0 ? "pos" : "neg";
+      } catch (_) { /* panel optional if API down */ }
+    }
+
+    async function fetchIdeas() {
+      try {
+        const res = await fetch(`${apiBase()}/ideas?status=active&symbol=XAUUSD&limit=50&_=${Date.now()}`);
+        if (!res.ok) throw new Error(res.statusText);
+        const data = await res.json();
+        renderIdeasTable(data.ideas || []);
+        $("ideasStatus").textContent = `${data.total} active · updated ${new Date().toLocaleTimeString()}`;
+      } catch (err) {
+        $("ideasStatus").textContent = `Ideas unavailable: ${err.message}`;
+      }
+    }
+
+    async function refreshPanel() {
+      await Promise.all([fetchPanelSummary(), fetchIdeas()]);
+    }
+
+    async function submitOrder() {
+      const base = apiBase();
+      if (!$("lockSource").checked) {
+        $("source").value = defaultSource();
+      }
+      const payload = buildPayload();
+      $("submitBtn").disabled = true;
+      $("submitStatus").textContent = "Submitting to trade manager…";
+      $("submitStatus").className = "submit-status";
+      try {
+        const res = await fetch(`${base}/signals`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(formatApiError(data));
+        const id = data.idea_id || (data.idea && data.idea.id);
+        $("submitStatus").textContent = `Accepted — idea #${id} (${payload.direction} @ ${payload.entry_price})`;
+        $("submitStatus").className = "submit-status ok";
+        showToast(`Order placed — idea #${id}`, "success");
+        await refreshPanel();
+        renderCurl();
+      } catch (err) {
+        $("submitStatus").textContent = err.message;
+        $("submitStatus").className = "submit-status err";
+        showToast(err.message, "error");
+      } finally {
+        $("submitBtn").disabled = false;
+      }
     }
 
     function snapshotLevels() {
@@ -990,13 +1277,13 @@
     }
 
     function renderCurl() {
-      const base = $("apiUrl").value.replace(/\/$/, "");
+      const base = apiBase();
       const json = JSON.stringify(buildPayload(), null, 2);
       $("curlOut").textContent = `curl -X POST ${base}/signals \\\n  -H 'Content-Type: application/json' \\\n  -d '${json.replace(/'/g, "'\\''")}'`;
     }
 
     async function fetchCandles(forceReinit = false) {
-      const base = $("apiUrl").value.replace(/\/$/, "");
+      const base = apiBase();
       const mins = $("lookback").value;
       const wasLoading = !state.lastFetchAt;
       if (wasLoading) $("chartStatus").textContent = "Loading…";
@@ -1128,6 +1415,14 @@
     $("refreshBtn").addEventListener("click", () => fetchCandles(false));
     $("resetBtn").addEventListener("click", resetLevels);
 
+    $("refreshIdeasBtn").addEventListener("click", refreshPanel);
+    $("submitBtn").addEventListener("click", submitOrder);
+    $("newSourceBtn").addEventListener("click", () => {
+      $("source").value = defaultSource();
+      $("lockSource").checked = false;
+      renderCurl();
+    });
+
     $("copyBtn").addEventListener("click", async () => {
       const text = $("curlOut").textContent;
       try {
@@ -1148,9 +1443,14 @@
       }, 2000);
     });
 
+    if (window.location.protocol.startsWith("http")) {
+      $("apiUrl").value = window.location.origin;
+    }
     $("source").value = defaultSource();
     fetchCandles(false);
+    refreshPanel();
     setInterval(() => fetchCandles(false), POLL_MS);
+    setInterval(refreshPanel, IDEAS_POLL_MS);
     drawChart();
   </script>
 </body>

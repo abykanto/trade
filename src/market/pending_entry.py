@@ -166,6 +166,28 @@ def plan_pending_entry(
     )
 
 
+def ready_for_initial_entry_placement(
+    direction: str | Direction,
+    entry: float,
+    bid: float,
+    ask: float,
+    zone_low: float,
+    zone_high: float,
+    tick_size: float = 0.0,
+) -> bool:
+    """Whether the first pending for an idea may be armed.
+
+    Proceed when price is inside the entry zone, or when a resting pending at
+    ``entry`` is possible (even if mid is outside the zone).  Only hold back
+    when price is outside the zone *and* a pending would fill immediately.
+    """
+    mid = (bid + ask) / 2.0
+    if zone_low <= mid <= zone_high:
+        return True
+    kind = select_pending_order_kind(direction, entry, bid, ask, tick_size)
+    return not pending_would_fill_immediately(kind, entry, bid, ask, tick_size)
+
+
 def fill_price_violates_entry(
     direction: str | Direction,
     entry: float,

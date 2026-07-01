@@ -118,11 +118,21 @@ def test_position_sizing_engine():
 def test_resolve_volume_predefined_overrides_dynamic_cap():
     contract = __import__("src.market.contract", fromlist=["SymbolContract"]).SymbolContract.for_symbol("XAUUSD")
     volume, source = PositionSizingEngine.resolve_volume(
-        contract, risk_amount=2.5, entry=4240.0, stop=4245.0,
+        contract, risk_amount=250.0, entry=4240.0, stop=4245.0,
         predefined_lot=0.03, max_lot_size=0.02,
     )
     assert source == "predefined"
     assert volume == 0.03
+
+
+def test_resolve_volume_predefined_capped_by_remaining_risk():
+    contract = __import__("src.market.contract", fromlist=["SymbolContract"]).SymbolContract.for_symbol("XAUUSD")
+    volume, source = PositionSizingEngine.resolve_volume(
+        contract, risk_amount=1.0, entry=4240.0, stop=4235.0,
+        predefined_lot=0.10,
+    )
+    assert source == "predefined"
+    assert volume < 0.10
 
 
 def test_resolve_volume_dynamic_capped_at_max_lot():
@@ -182,7 +192,7 @@ def test_daily_loss_limit(db_session):
 def test_five_loss_circuit_breaker(db_session):
     manager = PortfolioRiskManager()
     
-    # Add 5 consecutive losing trades
+    # Add 5 consecutive losing trades (most recent first in query order)
     for i in range(5):
         idea = TradeIdea(
             symbol=f"TEST{i}", direction="BUY", source="test", original_entry=1.0,
@@ -201,6 +211,87 @@ def test_five_loss_circuit_breaker(db_session):
         entry=2000, max_idea_risk=10, account_equity=10000.0
     )
     assert can_accept is False
+
+
+def test_five_loss_circuit_breaker_resets_after_win(db_session):
+    manager = PortfolioRiskManager()
+
+    win = TradeIdea(
+        symbol="WIN", direction="BUY", source="test", original_entry=1.0,
+        original_hard_stop=0.9, hard_stop=0.9, take_profit=1.1,
+        entry_zone_low=0.9, entry_zone_high=1.1, max_idea_risk=10, max_retries=1,
+        realized_pnl=5.0, state=TradeState.TP_REACHED.value,
+        updated_at=datetime.now(timezone.utc),
+    )
+    db_session.add(win)
+    for i in range(4):
+        idea = TradeIdea(
+            symbol=f"LOSS{i}", direction="BUY", source="test", original_entry=1.0,
+            original_hard_stop=0.9, hard_stop=0.9, take_profit=1.1,
+            entry_zone_low=0.9, entry_zone_high=1.1, max_idea_risk=10, max_retries=1,
+            realized_pnl=-10.0, state=TradeState.IDEA_INVALIDATED.value,
+            updated_at=datetime.now(timezone.utc),
+        )
+        db_session.add(idea)
+    db_session.commit()
+
+    can_accept = manager.can_accept_idea(
+        db=db_session, symbol="XAUUSD", direction="BUY", hard_stop=1990,
+        entry=2000, max_idea_risk=10, account_equity=10000.0,
+    )
+    assert can_accept is True
+
+
+def test_reentry_not_blocked_when_at_max_active_including_self(db_session):
+    """Re-arming an existing idea must not count against max_active_ideas."""
+    manager = PortfolioRiskManager(max_active_ideas=2)
+
+    reentry = TradeIdea(
+        symbol="XAUUSD", direction="BUY", source="test", original_entry=1.0,
+        original_hard_stop=0.9, hard_stop=0.9, take_profit=1.1,
+        entry_zone_low=0.9, entry_zone_high=1.1, max_idea_risk=10, max_retries=5,
+        state=TradeState.WAITING_FOR_REENTRY.value,
+    )
+    other = TradeIdea(
+        symbol="EURUSD", direction="BUY", source="test2", original_entry=1.0,
+        original_hard_stop=0.9, hard_stop=0.9, take_profit=1.1,
+        entry_zone_low=0.9, entry_zone_high=1.1, max_idea_risk=10, max_retries=1,
+        state=TradeState.WAITING_FOR_SETUP.value,
+    )
+    db_session.add_all([reentry, other])
+    db_session.commit()
+
+    can_accept = manager.can_accept_idea(
+        db=db_session, symbol="XAUUSD", direction="BUY", hard_stop=0.9,
+        entry=1.0, max_idea_risk=5.0, account_equity=10000.0,
+        exclude_idea_id=reentry.id,
+    )
+    assert can_accept is True
+
+
+def test_rejects_when_remaining_risk_zero(db_session):
+    manager = PortfolioRiskManager()
+    assert not manager.can_accept_idea(
+        db_session, "XAUUSD", "BUY", hard_stop=0.9, entry=1.0,
+        max_idea_risk=0.0, account_equity=10000.0,
+    )
+
+
+def test_entry_zone_mid_price_check():
+    from src.market.pending_entry import ready_for_initial_entry_placement
+
+    # Inside zone → always ready
+    assert ready_for_initial_entry_placement(
+        "BUY", 4240.0, 4239.9, 4240.1, 4239.0, 4241.0, tick_size=0.01,
+    )
+    # Below entry but resting buy-limit possible → ready (not blocked by zone)
+    assert ready_for_initial_entry_placement(
+        "BUY", 4240.0, 4235.0, 4235.2, 4239.0, 4241.0, tick_size=0.01,
+    )
+    # Far above entry, buy-limit can still rest → ready
+    assert ready_for_initial_entry_placement(
+        "BUY", 4240.0, 4250.0, 4250.2, 4239.0, 4241.0, tick_size=0.01,
+    )
 
 def test_portfolio_validation(db_session):
     manager = PortfolioRiskManager()

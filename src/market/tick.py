@@ -49,3 +49,11 @@ class MarketTick:
 
     def open_trade_tp_price(self, direction: str | Direction) -> float:
         return self.tp_trigger_price(direction)
+
+    def mid(self) -> float:
+        return (self.bid + self.ask) / 2.0
+
+    def in_price_range(self, low: float, high: float) -> bool:
+        """True when mid price is within [low, high] (entry zone check)."""
+        mid = self.mid()
+        return low <= mid <= high

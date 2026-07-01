@@ -26,7 +26,7 @@ class XauusdPriceParquetLogger:
         self,
         output_dir: Path | str | None = None,
         symbol: str = DEFAULT_SYMBOL,
-        flush_every_rows: int = 1,
+        flush_every_rows: int = 30,
     ):
         self.symbol = symbol.upper()
         self.output_dir = Path(output_dir or os.environ.get("PRICE_LOG_DIR", DEFAULT_PARQUET_DIR))
