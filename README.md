@@ -41,7 +41,6 @@ Copy `.env` with MT5 credentials (`MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER`) and
 For day-to-day development without containers:
 
 ```bash
-cp .env.example .env   # optional
 bash scripts/start_local.sh      # API + manager (default: mt5linux)
 bash scripts/start_local_ea.sh   # same, but EXECUTION_BACKEND=ea
 ```
@@ -62,7 +61,6 @@ bash scripts/stop_all.sh    # stop everything including Wine/MT5
 Run the Python brain in a container; keep MetaTrader 5 on the host and attach `TradeIdeaExecutor.mq5`. Point the EA at `127.0.0.1:19520` (published port).
 
 ```bash
-cp .env.example .env
 docker compose up --build
 ```
 

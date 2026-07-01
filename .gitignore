@@ -16,7 +16,7 @@ tmp/
 *.db-shm
 *.db-wal
 
-# Local env overrides (.env and .env.example are tracked for reference)
+# Local env overrides (.env is tracked in project root)
 .env.local
 .env.*.local
 
