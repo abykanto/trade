@@ -13,6 +13,7 @@ from src.core.models import (
 from sqlalchemy import func, or_
 
 from src.core.database import init_db, get_session_local, as_utc
+from src.core.paths import LOGS_DIR, ensure_runtime_dirs
 from src.core.config import load_trading_config, TradingConfig
 from src.execution.factory import create_execution_bridge
 from src.execution.bridge import ConnectionState
@@ -34,13 +35,14 @@ from src.market.bot_orders import is_bot_placed_order
 from src.market.order_outcome import PendingOrderOutcome
 from src.market.price_logger import XauusdPriceParquetLogger
 
+ensure_runtime_dirs()
 logging.basicConfig(level=logging.INFO, 
                     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-                    handlers=[logging.FileHandler("trade_manager.log"), logging.StreamHandler()])
+                    handlers=[logging.FileHandler(LOGS_DIR / "trade_manager.log"), logging.StreamHandler()])
 logger = logging.getLogger(__name__)
 
 class TradeManager:
-    def __init__(self, db_url="sqlite:///trade_ideas.db", config: TradingConfig | None = None):
+    def __init__(self, db_url: str | None = None, config: TradingConfig | None = None):
         self.engine = init_db(db_url)
         self.SessionLocal = get_session_local(self.engine)
         self.running = False

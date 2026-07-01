@@ -9,13 +9,15 @@ from pathlib import Path
 
 from src.core.models import TradeIdea, TradeEvent, TradeState, utcnow
 from src.core.database import init_db, get_session_local
+from src.core.paths import LOGS_DIR, ensure_runtime_dirs
 from src.market.candles import load_xauusd_1m_candles
 
 TOOLS_DIR = Path(__file__).resolve().parents[2] / "tools"
 
+ensure_runtime_dirs()
 logging.basicConfig(level=logging.INFO, 
                     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-                    handlers=[logging.FileHandler("api_server.log"), logging.StreamHandler()])
+                    handlers=[logging.FileHandler(LOGS_DIR / "api_server.log"), logging.StreamHandler()])
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Trade Idea Management API")

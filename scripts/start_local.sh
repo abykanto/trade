@@ -16,8 +16,8 @@ export PYTHONPATH="$ROOT"
 export EXECUTION_BACKEND="${EXECUTION_BACKEND:-mt5linux}"
 
 API_PORT="${API_PORT:-8001}"
-LOG_DIR="$ROOT/logs"
-PID_DIR="$ROOT/run"
+LOG_DIR="$ROOT/tmp/logs"
+PID_DIR="$ROOT/tmp/run"
 mkdir -p "$LOG_DIR" "$PID_DIR"
 
 if [[ ! -x "$VENV/bin/python" ]]; then

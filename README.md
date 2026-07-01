@@ -201,7 +201,8 @@ tools/
 scripts/
 ├── start_all.sh
 └── stop_all.sh
-data/price_logs/         # xauusd_ticks_YYYY-MM-DD.parquet
+tmp/                     # runtime artifacts (gitignored): logs, PIDs, parquet ticks
+trade_ideas.db           # SQLite state (gitignored, project root)
 tests/
 ```
 
@@ -209,10 +210,10 @@ tests/
 
 | Component | Default | Notes |
 |-----------|---------|-------|
-| Database | `sqlite:///trade_ideas.db` | Set via `TradeManager(db_url)` |
+| Database | `trade_ideas.db` (project root) | `DATABASE_URL` or `TradeManager(db_url)` |
 | MT5 host/port | `localhost:18812` | `MT5_HOST`, `MT5_PORT` in `.env` |
 | API port | `8001` | `API_PORT` in `.env` or uvicorn `--port` |
-| Price logs | `data/price_logs/` | `PRICE_LOG_DIR` |
+| Price logs | `tmp/data/price_logs/` | `PRICE_LOG_DIR` |
 | Chop exit | `config.json` | See below |
 
 ### Chop exit distance (`config.json`)
@@ -252,9 +253,9 @@ The **final hard SL** from the signal (`original_hard_stop`) is kept in the DB f
 | `ENABLE_PRIME_SESSION` | `true` | Restrict trading to London/NY overlap; set `false` to trade any UTC hour |
 | `PRICE_LOG_INTERVAL_SEC` | `1.0` | Tick logging interval |
 | `PRICE_LOG_FLUSH_ROWS` | `30` | Parquet rows buffered before disk flush |
-| `PRICE_LOG_DIR` | `data/price_logs` | Parquet output directory |
+| `PRICE_LOG_DIR` | `tmp/data/price_logs` | Parquet output directory |
 
-Logs are written to `logs/api.log`, `logs/manager.log`, `trade_manager.log`, and `api_server.log`.
+Logs and PID files live under `tmp/logs/` and `tmp/run/`. Python log handlers also write `tmp/logs/api_server.log` and `tmp/logs/trade_manager.log`.
 
 ## Telegram signal extraction (AI)
 

@@ -8,9 +8,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from src.core.paths import PRICE_LOGS_DIR
+
 logger = logging.getLogger(__name__)
 
-DEFAULT_PARQUET_DIR = Path(__file__).resolve().parents[2] / "data" / "price_logs"
+DEFAULT_PARQUET_DIR = PRICE_LOGS_DIR
 DEFAULT_SYMBOL = "XAUUSD"
 
 

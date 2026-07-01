@@ -1,6 +1,9 @@
+import os
 from datetime import datetime, timezone
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import declarative_base, sessionmaker
+
+from src.core.paths import DEFAULT_DB_URL
 
 Base = declarative_base()
 
@@ -22,7 +25,9 @@ def as_utc(dt: datetime | None) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
-def init_db(db_url="sqlite:///trade_ideas.db"):
+def init_db(db_url: str | None = None):
+    if db_url is None:
+        db_url = os.environ.get("DATABASE_URL", DEFAULT_DB_URL)
     """Initialize the database engine (singleton). Returns the engine.
 
     Calling this multiple times with the same URL returns the cached engine.

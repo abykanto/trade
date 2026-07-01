@@ -19,8 +19,8 @@ export DISPLAY="${DISPLAY:-:0}"
 
 API_PORT="${API_PORT:-8001}"
 MT5_PORT="${MT5_PORT:-18812}"
-LOG_DIR="$ROOT/logs"
-PID_DIR="$ROOT/run"
+LOG_DIR="$ROOT/tmp/logs"
+PID_DIR="$ROOT/tmp/run"
 mkdir -p "$LOG_DIR" "$PID_DIR"
 
 WINE_PYTHON="$WINEPREFIX/drive_c/Program Files/Python312/python.exe"

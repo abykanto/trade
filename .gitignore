@@ -9,22 +9,12 @@ venv/
 env/
 ENV/
 
-# Local database (runtime state)
-*.sqlite
-*.sqlite3
-*.db
+# Runtime artifacts (logs, PIDs, parquet ticks, scratch files)
+tmp/
+
+# SQLite WAL sidecars (trade_ideas.db is tracked in project root)
 *.db-shm
 *.db-wal
-
-# Logs and process/runtime dirs
-*.log
-logs/
-run/
-*.pid
-
-# Runtime market data (tick parquet, etc.)
-data/
-*.parquet
 
 # Local env overrides (.env and .env.example are tracked for reference)
 .env.local
@@ -62,7 +52,3 @@ docker-compose.*.local.yml
 # OS
 .DS_Store
 Thumbs.db
-
-# Scratch / editor leftovers
-Untitled*.py
-Untitled-*

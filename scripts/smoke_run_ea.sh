@@ -4,8 +4,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VENV="${VENV:-$ROOT/.venv}"
-LOG_DIR="$ROOT/logs"
-PID_DIR="$ROOT/run"
+LOG_DIR="$ROOT/tmp/logs"
+PID_DIR="$ROOT/tmp/run"
 API_PORT="${API_PORT:-8001}"
 EA_PORT="${EA_SERVER_PORT:-19520}"
 WINEPREFIX="${WINEPREFIX:-$HOME/.wine}"

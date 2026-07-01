@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-mkdir -p data logs run
+mkdir -p tmp/logs tmp/run tmp/data
 
 API_PORT="${API_PORT:-8001}"
 

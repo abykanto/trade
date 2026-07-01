@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PID_DIR="$ROOT/run"
+PID_DIR="$ROOT/tmp/run"
 
 if [[ -f "$ROOT/.env" ]]; then
   set -a
