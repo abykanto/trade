@@ -12,13 +12,19 @@ if [[ -f "$ROOT/.env" ]]; then
   set +a
 fi
 
+if [[ "${1:-}" == "--ea" ]]; then
+  export EXECUTION_BACKEND=ea
+  export EA_SERVER_HOST="${EA_SERVER_HOST:-0.0.0.0}"
+  export EA_SERVER_PORT="${EA_SERVER_PORT:-19520}"
+fi
+
+# shellcheck disable=SC1091
+source "$ROOT/scripts/runtime_paths.sh"
+
 export PYTHONPATH="$ROOT"
 export EXECUTION_BACKEND="${EXECUTION_BACKEND:-mt5linux}"
 
 API_PORT="${API_PORT:-8001}"
-LOG_DIR="$ROOT/tmp/logs"
-PID_DIR="$ROOT/tmp/run"
-mkdir -p "$LOG_DIR" "$PID_DIR"
 
 if [[ ! -x "$VENV/bin/python" ]]; then
   echo "Virtualenv not found at $VENV — run: python -m venv .venv && pip install -r requirements.txt"

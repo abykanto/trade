@@ -12,6 +12,9 @@ if [[ -f "$ROOT/.env" ]]; then
   set +a
 fi
 
+# shellcheck disable=SC1091
+source "$ROOT/scripts/runtime_paths.sh"
+
 export WINEPREFIX="${WINEPREFIX:-/home/privatecirle/.wine}"
 export WINEDEBUG="${WINEDEBUG:--all}"
 export PYTHONPATH="$ROOT"
@@ -19,9 +22,6 @@ export DISPLAY="${DISPLAY:-:0}"
 
 API_PORT="${API_PORT:-8001}"
 MT5_PORT="${MT5_PORT:-18812}"
-LOG_DIR="$ROOT/tmp/logs"
-PID_DIR="$ROOT/tmp/run"
-mkdir -p "$LOG_DIR" "$PID_DIR"
 
 WINE_PYTHON="$WINEPREFIX/drive_c/Program Files/Python312/python.exe"
 MT5_TERMINAL="$WINEPREFIX/drive_c/Program Files/MetaTrader 5/terminal64.exe"

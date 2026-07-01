@@ -5,7 +5,15 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-mkdir -p tmp/logs tmp/run tmp/data
+if [[ -f "$ROOT/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/.env"
+  set +a
+fi
+
+# shellcheck disable=SC1091
+source "$ROOT/scripts/runtime_paths.sh"
 
 API_PORT="${API_PORT:-8001}"
 

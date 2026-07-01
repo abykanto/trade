@@ -26,13 +26,13 @@ def as_utc(dt: datetime | None) -> datetime | None:
 
 
 def init_db(db_url: str | None = None):
-    if db_url is None:
-        db_url = os.environ.get("DATABASE_URL", DEFAULT_DB_URL)
     """Initialize the database engine (singleton). Returns the engine.
 
     Calling this multiple times with the same URL returns the cached engine.
     Pass a different URL (e.g. sqlite:///:memory: for tests) to force a new engine.
     """
+    if db_url is None:
+        db_url = os.environ.get("DATABASE_URL", DEFAULT_DB_URL)
     global _engine, _SessionLocal
 
     # Allow re-init with a different URL (tests use :memory:)

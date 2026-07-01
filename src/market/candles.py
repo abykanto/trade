@@ -7,7 +7,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from src.market.price_logger import DEFAULT_PARQUET_DIR, XauusdPriceParquetLogger
+from src.core.paths import resolve_env_path, _runtime_relative
+from src.market.price_logger import XauusdPriceParquetLogger
 
 
 def _minute_bucket(ts: datetime) -> datetime:
@@ -84,7 +85,11 @@ def load_xauusd_1m_candles(
 ) -> dict[str, Any]:
     """Load recent 1m candles from parquet tick logs."""
     lookback_minutes = max(5, min(int(lookback_minutes), 24 * 60))
-    directory = Path(parquet_dir or DEFAULT_PARQUET_DIR)
+    directory = (
+        Path(parquet_dir)
+        if parquet_dir is not None
+        else resolve_env_path("PRICE_LOG_DIR", f"{_runtime_relative()}/data/price_logs")
+    )
     since = datetime.now(timezone.utc) - timedelta(minutes=lookback_minutes)
     rows = _iter_tick_rows(directory, since)
     candles = ticks_to_1m_candles(rows)

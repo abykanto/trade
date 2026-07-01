@@ -32,7 +32,7 @@ Run commands from the project root with `PYTHONPATH=.` so the `src` package reso
 export PYTHONPATH=.
 ```
 
-Copy `.env` with MT5 credentials (`MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER`) and any overrides (see [Environment variables](#environment-variables)).
+Copy `.env` with MT5 credentials, paths, and any overrides (see [Environment variables](#environment-variables)). All runtime directories and the database URL are controlled from `.env`.
 
 ## Running
 
@@ -74,15 +74,14 @@ MT5 stays outside Docker. Strategy, risk, and state machine remain 100% in Pytho
 uvicorn src.api.server:app --host 0.0.0.0 --port 8001
 ```
 
-**Trade manager** (executes and monitors trades):
+**Trade manager** (executes and monitors trades). `.env` is loaded automatically on startup.
 
 ```bash
 # Default: Python mt5linux bridge (reference)
 python -m src.main
 
 # Optional: MQL5 EA executor (attach TradeIdeaExecutor in MT5 first)
-export EXECUTION_BACKEND=ea
-python -m src.main
+EXECUTION_BACKEND=ea python -m src.main
 ```
 
 ## Submitting signals
@@ -208,10 +207,11 @@ tests/
 
 | Component | Default | Notes |
 |-----------|---------|-------|
-| Database | `trade_ideas.db` (project root) | `DATABASE_URL` or `TradeManager(db_url)` |
+| Runtime root | `tmp/` | `RUNTIME_DIR` in `.env` |
+| Database | `trade_ideas.db` | `DATABASE_URL` or `DATABASE_PATH` |
 | MT5 host/port | `localhost:18812` | `MT5_HOST`, `MT5_PORT` in `.env` |
 | API port | `8001` | `API_PORT` in `.env` or uvicorn `--port` |
-| Price logs | `tmp/data/price_logs/` | `PRICE_LOG_DIR` |
+| Price logs | `tmp/data/price_logs/` | `PRICE_LOG_DIR` (default: `${RUNTIME_DIR}/data/price_logs`) |
 | Chop exit | `config.json` | See below |
 
 ### Chop exit distance (`config.json`)
@@ -239,6 +239,12 @@ The **final hard SL** from the signal (`original_hard_stop`) is kept in the DB f
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
+| `RUNTIME_DIR` | `tmp` | Root for logs, PIDs, parquet ticks (relative to project root or absolute) |
+| `LOGS_DIR` | `${RUNTIME_DIR}/logs` | Shell + Python log output |
+| `RUN_DIR` | `${RUNTIME_DIR}/run` | PID files for start/stop scripts |
+| `PRICE_LOG_DIR` | `${RUNTIME_DIR}/data/price_logs` | Parquet tick output |
+| `DATABASE_PATH` | `trade_ideas.db` | SQLite file path (when `DATABASE_URL` unset) |
+| `DATABASE_URL` | `sqlite:///trade_ideas.db` | SQLAlchemy database URL |
 | `MT5_LOGIN` / `MT5_PASSWORD` / `MT5_SERVER` | — | MT5 account credentials |
 | `MT5_HOST` / `MT5_PORT` | `localhost` / `18812` | mt5linux RPyC (legacy backend) |
 | `EXECUTION_BACKEND` | `mt5linux` | `mt5linux` or `ea` (MQL5 executor) |
@@ -251,9 +257,8 @@ The **final hard SL** from the signal (`original_hard_stop`) is kept in the DB f
 | `ENABLE_PRIME_SESSION` | `true` | Restrict trading to London/NY overlap; set `false` to trade any UTC hour |
 | `PRICE_LOG_INTERVAL_SEC` | `1.0` | Tick logging interval |
 | `PRICE_LOG_FLUSH_ROWS` | `30` | Parquet rows buffered before disk flush |
-| `PRICE_LOG_DIR` | `tmp/data/price_logs` | Parquet output directory |
 
-Logs and PID files live under `tmp/logs/` and `tmp/run/`. Python log handlers also write `tmp/logs/api_server.log` and `tmp/logs/trade_manager.log`.
+Paths resolve the same way in Python (`src/core/paths.py`), shell scripts (`scripts/runtime_paths.sh`), and Docker (`docker-compose.yml` bind-mounts from `.env`).
 
 ## Telegram signal extraction (AI)
 

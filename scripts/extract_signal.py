@@ -9,6 +9,10 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+from src.core.env import load_project_env
+
+load_project_env()
+
 from src.ai import create_signal_ai_provider
 from src.ai.text_signals import ProcessStatus, payload_to_curl, process_signal_message
 

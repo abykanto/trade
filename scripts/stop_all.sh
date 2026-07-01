@@ -2,7 +2,6 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PID_DIR="$ROOT/tmp/run"
 
 if [[ -f "$ROOT/.env" ]]; then
   set -a
@@ -10,6 +9,9 @@ if [[ -f "$ROOT/.env" ]]; then
   source "$ROOT/.env"
   set +a
 fi
+
+# shellcheck disable=SC1091
+source "$ROOT/scripts/runtime_paths.sh"
 
 stop_pid_file() {
   local name="$1"

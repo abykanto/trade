@@ -4,20 +4,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VENV="${VENV:-$ROOT/.venv}"
-LOG_DIR="$ROOT/tmp/logs"
-PID_DIR="$ROOT/tmp/run"
+LOG_DIR=""
+PID_DIR=""
 API_PORT="${API_PORT:-8001}"
 EA_PORT="${EA_SERVER_PORT:-19520}"
 WINEPREFIX="${WINEPREFIX:-$HOME/.wine}"
 MT5_TERMINAL="$WINEPREFIX/drive_c/Program Files/MetaTrader 5/terminal64.exe"
-
-mkdir -p "$LOG_DIR" "$PID_DIR"
-export PYTHONPATH="$ROOT"
-export DISPLAY="${DISPLAY:-:0}"
-export EXECUTION_BACKEND=ea
-export EA_SERVER_HOST=0.0.0.0
-export EA_SERVER_PORT="$EA_PORT"
-export WINEDEBUG="${WINEDEBUG:--all}"
 
 if [[ -f "$ROOT/.env" ]]; then
   set -a
@@ -25,6 +17,16 @@ if [[ -f "$ROOT/.env" ]]; then
   source "$ROOT/.env"
   set +a
 fi
+
+# shellcheck disable=SC1091
+source "$ROOT/scripts/runtime_paths.sh"
+
+export PYTHONPATH="$ROOT"
+export DISPLAY="${DISPLAY:-:0}"
+export EXECUTION_BACKEND=ea
+export EA_SERVER_HOST=0.0.0.0
+export EA_SERVER_PORT="$EA_PORT"
+export WINEDEBUG="${WINEDEBUG:--all}"
 
 echo "=== 1/6 Compile EA ==="
 bash "$ROOT/scripts/sync_compile_ea.sh"
